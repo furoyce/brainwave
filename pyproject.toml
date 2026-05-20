@@ -1,2 +1,0 @@
-[tool.vercel]
-entrypoint = "realtime_server:app"
