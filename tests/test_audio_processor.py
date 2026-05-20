@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import wave
 import os
-from realtime_server import AudioProcessor
+from main import AudioProcessor
 
 @pytest.fixture
 def audio_processor():

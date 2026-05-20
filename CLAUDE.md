@@ -5,8 +5,9 @@
 - Live URL: https://brainwave.wingmate-builder.com
 - Repo: https://github.com/furoyce/brainwave
 - Linear project: **Brainwave** on team **JRF** (https://linear.app/jrf/project/brainwave-44f19339c4f9)
-- Stack: FastAPI + WebSocket backend (`realtime_server.py`, entrypoint `realtime_server:app`), static HTML/JS frontend, OpenAI Realtime API for transcription, Gemini for Readability/Correctness.
-- Deploy target: Vercel (project under team `wingmate-b5e12139`). Entrypoint is declared in `pyproject.toml` under `[tool.vercel]`.
+- Stack: FastAPI + WebSocket backend (`main.py`, entrypoint `main:app`), static HTML/JS frontend, OpenAI Realtime API for transcription, Gemini for Readability/Correctness.
+- Deploy target: Vercel (project under team `wingmate-b5e12139`). The Python entrypoint module is named `main.py` so Vercel's FastAPI builder auto-detects it (the builder only auto-detects `main.py` / `app.py` / `api/index.py` etc.; non-standard module names need either a rename like this one, or an explicit `[tool.vercel] entrypoint` declaration in a fully-fleshed-out `pyproject.toml`).
+- `.vercelignore` excludes `tests/` so the FastAPI builder doesn't see a second `app` symbol via `tests/test_realtime_server.py`'s `from main import app`.
 
 ## Linear workflow (mandatory)
 

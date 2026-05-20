@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from realtime_server import app, ReadabilityRequest, CorrectnessRequest, AskAIRequest
+from main import app, ReadabilityRequest, CorrectnessRequest, AskAIRequest
 import json
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -8,7 +8,7 @@ client = TestClient(app)
 
 @pytest.fixture
 def mock_llm_processor():
-    with patch('realtime_server.llm_processor') as mock:
+    with patch('main.llm_processor') as mock:
         # Setup for sync processing
         mock.process_text_sync.return_value = "Mocked response"
         
@@ -42,7 +42,7 @@ def test_ask_ai(mock_llm_processor):
 
 @pytest.mark.asyncio
 async def test_websocket_endpoint():
-    with patch('realtime_server.OpenAIRealtimeAudioTextClient') as mock_client:
+    with patch('main.OpenAIRealtimeAudioTextClient') as mock_client:
         mock_instance = AsyncMock()
         mock_client.return_value = mock_instance
         mock_instance.connect = AsyncMock()
@@ -87,14 +87,14 @@ def test_get_main_js():
 
 
 def test_readability_prompt_not_found():
-    with patch('realtime_server.PROMPTS', {}):
+    with patch('main.PROMPTS', {}):
         request = ReadabilityRequest(text="Test")
         response = client.post("/api/v1/readability", json=request.model_dump())
         assert response.status_code == 500
 
 
 def test_correctness_prompt_not_found():
-    with patch('realtime_server.PROMPTS', {}):
+    with patch('main.PROMPTS', {}):
         request = CorrectnessRequest(text="Test")
         response = client.post("/api/v1/correctness", json=request.model_dump())
         assert response.status_code == 500
