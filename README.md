@@ -160,7 +160,7 @@ Understanding the architecture of **Brainwave** provides insights into its real-
 #### a. `static/realtime.html`
 
 - **User Interface:** Provides a clean and responsive UI for users to interact with Brainwave, featuring:
-  - **Model Selection:** Dropdown to choose between `gpt-realtime-mini-2025-12-15` (default) and `gpt-realtime-1.5`.
+  - **Model Selection:** Dropdown to choose between `gpt-realtime-mini-2025-12-15` (default), `gpt-realtime-1.5`, and `gpt-realtime-whisper`.
   - **Recording Controls:** A toggle button to start and stop audio recording.
   - **Transcript Display:** A section to display the transcribed and summarized text in real-time.
   - **Copy Functionality:** Enables users to easily copy the summarized text.
