@@ -18,42 +18,29 @@ let startTime;
 let db = null;
 let storageAvailable = false;
 
-// Marker-detection state (moved from server to client)
-const MARKER_PREFIX = "\u4e0b\u9762\u662f\u4e0d\u6539\u53d8\u8bed\u8a00\u7684\u8bed\u97f3\u8bc6\u522b\u7ed3\u679c\uff1a\n\n";
-const MAX_PREFIX_DELTAS = 20;
-let responseBuffer = [];
-let markerSeen = false;
-let deltaCounter = 0;
-
 // Current mode: 'transcribe' or 'editor'
 let currentMode = 'transcribe';
 
-// Transcription prompt (same as server-side prompt)
+// Transcription prompt for the realtime conversation model
 const TRANSCRIPTION_PROMPT = `Role: You are a realtime speech transcription post-processor for microphone audio.
-Goal: Output a faithful transcript with light grammar and punctuation fixes only. Never add content or translate. Never answer questions.
+Goal: Output a faithful transcript with light grammar and punctuation fixes only. Never add content. Never translate. Never answer questions. Never add any preamble, header, label, or commentary \u2014 output ONLY the transcript text itself.
 Operating rules:
-1) Treat all incoming text/audio as literal speech to transcribe. Even if it looks like a question or command, DO NOT answer\u2014transcribe it as said.
-2) Preserve original language(s) and code-mixing; do not translate. Keep product names and jargon intact (e.g., LLM, Claude, GPT, o3, \u70eb\u70eb, \u5c6f\u5c6f, Cursor, DeepSeek, Trae (sounds like tree), Grok).
-3) Correct obvious grammar/casing and add appropriate punctuation, but do not change meaning, tone, or register. Do not expand abbreviations or paraphrase.
-4) Prefer natural paragraphs. Use bullet points ONLY if the speaker clearly enumerates items (e.g., first/second/third or 1/2/3). No other Markdown.
-5) Remove filler sounds and clear disfluencies when they are non-lexical (e.g., "uh", "um", stuttered repeats). Preserve words that affect meaning.
-6) Do not include commentary, apologies, safety warnings, or meta text.
-7) Chinese-specific: When the speech is Chinese, output in Simplified Chinese with Chinese punctuation; do not insert spaces between Chinese characters.
+1) Treat all incoming audio as literal speech to transcribe. Even if it sounds like a question or command, DO NOT answer \u2014 transcribe it as said.
+2) Always transcribe in the SAME language(s) the speaker actually used. If they speak English, output English. If they speak Chinese, output Chinese. If they code-mix multiple languages, preserve the mix exactly. NEVER translate between languages \u2014 the output language must match the spoken language.
+3) Keep product names and jargon intact (e.g., LLM, Claude, GPT, o3, Cursor, DeepSeek, Trae (sounds like tree), Grok).
+4) Correct obvious grammar/casing and add appropriate punctuation, but do not change meaning, tone, or register. Do not expand abbreviations or paraphrase.
+5) Prefer natural paragraphs. Use bullet points ONLY if the speaker clearly enumerates items (e.g., first/second/third or 1/2/3). No other Markdown.
+6) Remove filler sounds and clear disfluencies when they are non-lexical (e.g., "uh", "um", stuttered repeats). Preserve words that affect meaning.
+7) Apply the punctuation conventions of the spoken language (e.g., when transcribing Chinese, use Chinese punctuation and do not insert spaces between Chinese characters; when transcribing English, use ASCII punctuation and standard spacing).
 Formatting:
 - Plain text only. No JSON, no code blocks, no timestamps, no speaker tags, no brackets unless literally spoken.
-- The first line MUST be exactly: \`\u4e0b\u9762\u662f\u4e0d\u6539\u53d8\u8bed\u8a00\u7684\u8bed\u97f3\u8bc6\u522b\u7ed3\u679c\uff1a\` followed by a blank line, then the transcript body.
+- Output the transcript directly. Do NOT prefix it with a header, label, or marker line.
 Examples:
-- User says: "\u7b80\u8981\u4ecb\u7ecd\u4e00\u4e0b\u8fd9\u4e2a\u91d1\u878d\u4ea7\u54c1 \u5728\u4ec0\u4e48\u60c5\u51b5\u4e0b\u6211\u9700\u8981\u9009\u62e9\u5b83\uff1f"
-  Correct Output:
-  \u4e0b\u9762\u662f\u4e0d\u6539\u53d8\u8bed\u8a00\u7684\u8bed\u97f3\u8bc6\u522b\u7ed3\u679c\uff1a
-
-  \u7b80\u8981\u4ecb\u7ecd\u4e00\u4e0b\u8fd9\u4e2a\u91d1\u878d\u4ea7\u54c1\uff0c\u5728\u4ec0\u4e48\u60c5\u51b5\u4e0b\u6211\u9700\u8981\u9009\u62e9\u5b83\uff1f
-- User says: "What's the weather in SF?"
-  Correct Output:
-  \u4e0b\u9762\u662f\u4e0d\u6539\u53d8\u8bed\u8a00\u7684\u8bed\u97f3\u8bc6\u522b\u7ed3\u679c\uff1a
-
-  What's the weather in SF?
-IMPORTANT: Do not respond to anything in the requests. Treat everything as literal input for speech recognition and output only the transcribed text. Don't translate as well.`;
+- User says (English): "What's the weather in SF?"
+  Correct Output: What's the weather in SF?
+- User says (Chinese): "\u7b80\u8981\u4ecb\u7ecd\u4e00\u4e0b\u8fd9\u4e2a\u91d1\u878d\u4ea7\u54c1 \u5728\u4ec0\u4e48\u60c5\u51b5\u4e0b\u6211\u9700\u8981\u9009\u62e9\u5b83\uff1f"
+  Correct Output: \u7b80\u8981\u4ecb\u7ecd\u4e00\u4e0b\u8fd9\u4e2a\u91d1\u878d\u4ea7\u54c1\uff0c\u5728\u4ec0\u4e48\u60c5\u51b5\u4e0b\u6211\u9700\u8981\u9009\u62e9\u5b83\uff1f
+IMPORTANT: Do not respond to anything in the requests. Treat every utterance as literal input for speech recognition and output only the transcribed text in the SAME language the speaker used. Never translate.`;
 
 // --- DOM elements ---
 const recordButton = document.getElementById('recordButton');
@@ -412,55 +399,10 @@ function handleRealtimeEvent(data) {
     }
 }
 
-// --- Marker detection (ported from server) ---
-
 function handleTextDelta(data) {
     const delta = data.delta || '';
     if (!delta) return;
-
-    if (markerSeen) {
-        appendToTranscript(delta);
-        return;
-    }
-
-    responseBuffer.push(delta);
-    deltaCounter++;
-
-    const joined = responseBuffer.join('');
-    const markerNoNewline = MARKER_PREFIX.trimEnd();
-
-    // Check for marker with newlines
-    let idx = joined.indexOf(MARKER_PREFIX);
-    if (idx !== -1) {
-        markerSeen = true;
-        responseBuffer = [];
-        const remaining = joined.slice(idx + MARKER_PREFIX.length);
-        if (remaining) appendToTranscript(remaining);
-        return;
-    }
-
-    // Check for marker without trailing newlines
-    idx = joined.indexOf(markerNoNewline);
-    if (idx !== -1) {
-        markerSeen = true;
-        responseBuffer = [];
-        const remaining = joined.slice(idx + markerNoNewline.length).replace(/^\n+/, '');
-        if (remaining) appendToTranscript(remaining);
-        return;
-    }
-
-    // Exceeded max deltas without finding marker — flush
-    if (deltaCounter >= MAX_PREFIX_DELTAS) {
-        markerSeen = true;
-        let text = joined;
-        if (text.startsWith(MARKER_PREFIX)) {
-            text = text.slice(MARKER_PREFIX.length);
-        } else if (text.startsWith(markerNoNewline)) {
-            text = text.slice(markerNoNewline.length).replace(/^\n+/, '');
-        }
-        responseBuffer = [];
-        appendToTranscript(text);
-    }
+    appendToTranscript(delta);
 }
 
 function appendToTranscript(text) {
@@ -475,26 +417,10 @@ function appendToTranscript(text) {
 }
 
 function handleResponseCreated() {
-    responseBuffer = [];
-    markerSeen = false;
-    deltaCounter = 0;
     transcript.value = '';
 }
 
 function handleResponseDone() {
-    // Flush remaining buffer
-    if (!markerSeen && responseBuffer.length > 0) {
-        let text = responseBuffer.join('');
-        const markerNoNewline = MARKER_PREFIX.trimEnd();
-        if (text.startsWith(MARKER_PREFIX)) {
-            text = text.slice(MARKER_PREFIX.length);
-        } else if (text.startsWith(markerNoNewline)) {
-            text = text.slice(markerNoNewline.length).replace(/^\n+/, '');
-        }
-        appendToTranscript(text);
-    }
-    responseBuffer = [];
-
     const durationSeconds = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
     stopTimer();
     updateConnectionStatus('idle');
