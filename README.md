@@ -5,7 +5,6 @@
 1. [Introduction](#introduction)
 2. [Deployment](#deployment)
 3. [Code Structure & Architecture](#code-structure--architecture)
-4. [Testing](#testing)
 
 ---
 
@@ -40,262 +39,46 @@ In the era of rapid information exchange, capturing and organizing ideas swiftly
 
 ## Deployment
 
-Deploying **Brainwave** involves setting up a Python-based environment, installing the necessary dependencies, and launching the server to handle real-time speech recognition and summarization. Follow the steps below to get started:
+Brainwave runs on Vercel: the Python serverless function in `api/index.py` is the entrypoint, and the static frontend lives in `public/`. Routing is configured by `vercel.json` (`/` and `/api/*` both go to the function; everything else is served as a static asset out of `public/`).
 
-### Prerequisites
+### Required environment variables
 
-- **Python 3.8+**: Ensure that Python is installed on your system. You can download it from the [official website](https://www.python.org/downloads/).
-- **Virtual Environment Tool**: It's recommended to use `venv` or `virtualenv` to manage project dependencies.
+- `OPENAI_API_KEY` — used to mint ephemeral session tokens for the OpenAI Realtime API and to back the Readability / Correctness endpoints.
+- `DATABASE_URL` — Postgres connection string used by `api/index.py` to persist transcripts.
 
-### Setup Steps
+### Local development
 
-1. **Clone the Repository**
+```bash
+pip install -r requirements.txt
+vercel dev          # runs the function + static assets locally on http://localhost:3000
+```
 
-   ```bash
-   git clone https://github.com/grapeot/brainwave.git
-   cd brainwave
-   ```
+### Production deploys
 
-2. **Create a Virtual Environment**
-
-   ```bash
-   python3 -m venv venv
-   ```
-
-3. **Activate the Virtual Environment**
-
-   - **On macOS/Linux:**
-
-     ```bash
-     source venv/bin/activate
-     ```
-
-   - **On Windows:**
-
-     ```bash
-     venv\Scripts\activate
-     ```
-
-4. **Install Dependencies**
-
-   Ensure that you have `pip` updated, then install the required packages:
-
-   ```bash
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-5. **Configure Environment Variables**
-
-   Brainwave requires the OpenAI API key to function. You can set it via environment variables or a `.env` file (loaded via `python-dotenv`):
-
-   - **Required:** `OPENAI_API_KEY` – for realtime transcription and Readability/Correctness
-   - **Optional:** `OPENAI_REALTIME_MODEL` – default `gpt-realtime-mini-2025-12-15`; `OPENAI_REALTIME_MODALITIES` – default `text`
-   - **For Readability/Correctness (Gemini):** `GOOGLE_API_KEY` – for Gemini-based text enhancement
-
-   - **On macOS/Linux:**
-
-     ```bash
-     export OPENAI_API_KEY='your-openai-api-key'
-     ```
-
-   - **On Windows (Command Prompt):**
-
-     ```cmd
-     set OPENAI_API_KEY=your-openai-api-key
-     ```
-
-   - **On Windows (PowerShell):**
-
-     ```powershell
-     $env:OPENAI_API_KEY="your-openai-api-key"
-     ```
-
-6. **Launch the Server**
-
-   Start the FastAPI server using Uvicorn:
-
-   ```bash
-   uvicorn realtime_server:app --host 0.0.0.0 --port 3005
-   ```
-
-   The server will be accessible at `http://localhost:3005`.
-
-7. **Access the Application**
-
-   Open your web browser and navigate to `http://localhost:3005` to interact with Brainwave's speech recognition interface.
+Pushes to `master` trigger a production deploy on the `brainwave` Vercel project. The custom domain `brainwave.wingmate-builder.com` is aliased to the latest READY production deployment.
 
 ---
 
 ## Code Structure & Architecture
 
-Understanding the architecture of **Brainwave** provides insights into its real-time processing capabilities and multilingual support. The project is organized into several key components, each responsible for distinct functionalities.
+### Backend — `api/index.py`
 
-### 1. **Backend**
+A single Vercel serverless function built on FastAPI. Routes:
 
-#### a. `realtime_server.py`
+- `POST /api/token` — mints an ephemeral OpenAI Realtime session token that the browser uses to open a direct WebRTC connection to the OpenAI API.
+- `POST /api/readability` and `POST /api/correctness` — streaming text-processing endpoints.
+- `POST /api/transcripts` — persists completed transcripts to Postgres.
+- `GET /` — serves the inlined `INDEX_HTML` (the source-of-truth duplicate of `public/index.html`).
 
-- **Framework:** Utilizes **FastAPI** to handle HTTP and WebSocket connections, offering high performance and scalability.
-- **WebSocket Endpoint:** Establishes a `/api/v1/ws` endpoint for real-time audio streaming between the client and server.
-- **Audio Processing:**
-  - **`AudioProcessor` Class:** Resamples incoming audio data from 48kHz to 24kHz to match OpenAI's requirements.
-  - **Buffer Management:** Accumulates audio chunks for efficient processing and transmission.
-- **Concurrency:** Employs `asyncio` to manage asynchronous tasks for receiving and sending audio data, ensuring non-blocking operations.
-- **Logging:** Implements comprehensive logging to monitor connections, data flow, and potential errors.
+The function imports `openai`, `httpx`, and `psycopg2` directly; it does not depend on any other modules in the repo.
 
-#### b. `openai_realtime_client.py`
+### Frontend — `public/`
 
-- **WebSocket Client:** Manages the connection to OpenAI's real-time API, facilitating the transmission of audio data and reception of transcriptions.
-- **Session Management:** Handles session creation, updates, and closure, ensuring a stable and persistent connection.
-- **Event Handlers:** Registers and manages handlers for various message types from OpenAI, allowing for customizable responses and actions based on incoming data.
-- **Error Handling:** Incorporates robust mechanisms to handle and log connection issues or unexpected messages.
+- `public/index.html` — top bar with Transcribe / Editor mode toggle and model selector; main content area; bottom controls (record / clear / copy).
+- `public/main.js` — WebRTC connection to OpenAI Realtime, marker-detection of the transcript stream, Editor mode with live markdown preview, and the Readability / Correctness clients.
+- `public/style.css` — styles for both modes.
 
-#### c. `prompts.py`
-
-- **Prompt Definitions:** Contains a dictionary of prompts in both Chinese and English, tailored for tasks such as paraphrasing, readability enhancement, and generating insightful summaries.
-- **Customization:** Allows for easy modification and extension of prompts to cater to different processing requirements or languages.
-
-### 2. **Frontend**
-
-#### a. `static/realtime.html`
-
-- **User Interface:** Provides a clean and responsive UI for users to interact with Brainwave, featuring:
-  - **Model Selection:** Dropdown to choose between `gpt-realtime-mini-2025-12-15` (default) and `gpt-realtime-1.5`.
-  - **Recording Controls:** A toggle button to start and stop audio recording.
-  - **Transcript Display:** A section to display the transcribed and summarized text in real-time.
-  - **Copy Functionality:** Enables users to easily copy the summarized text.
-  - **Timer:** Visual feedback to indicate recording duration.
-
-- **Styling:** Utilizes CSS to ensure a modern and user-friendly appearance, optimized for both desktop and mobile devices.
-
-- **Audio Handling:**
-  - **Web Audio API:** Captures audio streams from the user's microphone, processes them into the required format, and handles chunking for transmission.
-  - **WebSocket Integration:** Establishes and manages the WebSocket connection to the backend server, ensuring seamless data flow.
-
-### 3. **Configuration**
-
-#### a. `config.py`
-
-- **Model & Modalities:** Loads `OPENAI_REALTIME_MODEL` (default `gpt-realtime-mini-2025-12-15`) and `OPENAI_REALTIME_MODALITIES` (default `text`) from environment variables.
-
-#### b. `requirements.txt`
-
-Lists all Python dependencies required to run Brainwave, ensuring that the environment is set up with compatible packages:
-
-### 4. **Prompts & Text Processing**
-
-Brainwave leverages a suite of predefined prompts to enhance text processing capabilities:
-
-- **Paraphrasing:** Corrects speech-to-text errors and improves punctuation without altering the original meaning (used for realtime transcription).
-- **Readability Enhancement:** Improves the readability of transcribed text by adding appropriate punctuation and formatting.
-- **Correctness Check:** Analyzes text for factual accuracy.
-
-These prompts are meticulously crafted to ensure that the transcribed text is not only accurate but also contextually rich and user-friendly.
-
-### 5. **Logging & Monitoring**
-
-Comprehensive logging is integrated throughout the backend components to monitor:
-
-- **Connection Status:** Tracks WebSocket connections and disconnections.
-- **Data Transmission:** Logs the size and status of audio chunks being processed and sent.
-- **Error Reporting:** Captures and logs any errors or exceptions, facilitating easier debugging and maintenance.
-
-### 6. **Local Storage Replay Feature (IndexedDB)**
-
-Brainwave includes a browser-based replay feature that allows users to replay their most recent recording session if recognition fails, network is interrupted, or backend errors occur.
-
-#### Overview
-
-- **Purpose:** Persist audio chunks and control events (start/stop) to browser local storage during recording, enabling replay without re-speaking.
-- **Storage:** Uses IndexedDB (not localStorage) for binary data support and larger capacity (typically GB-level).
-- **Scope:** Only keeps the most recent session by default to avoid unlimited storage usage. If local storage is unavailable, real-time recording still works (but replay is disabled).
-
-#### Technical Details
-
-**Storage Model:**
-- **Database:** `brainwave-replay`, version `1`
-- **Object Stores:**
-  - `sessions` (keyPath: `id`, autoIncrement: true)
-    - Fields: `id`, `createdAt`, `status` ("recording"|"completed"|"failed"), `sampleRate` (default 24000), `channelCount` (1), `durationMs`, `error`
-  - `chunks` (keyPath: `id`, autoIncrement: true, index `sessionId`)
-    - Fields: `sessionId`, `seq`, `deltaMs` (time offset from start for replay throttling), `kind` ("start"|"audio"|"stop"|"meta"), `payload` (Blob or ArrayBuffer), `byteLength`
-
-**Storage Size Estimation:**
-- 24000 sample rate, 16-bit mono => 48KB/second
-- Only keeps the most recent N sessions (e.g., 5 sessions or total < 100MB)
-- Oldest sessions and their chunks are deleted when quota is exceeded
-
-**Recording Workflow:**
-1. On `startRecording` success: Create session, write a `kind: "start"` record with `deltaMs = 0`
-2. During `onaudioprocess`: When sending each 24k-sample chunk to backend, also call `appendChunk(sessionId, { seq, deltaMs, kind: "audio", payload: sendBuffer })`. `deltaMs` is calculated using `performance.now()` relative to session start to maintain original timing.
-3. On `stopRecording`: After sending the last chunk, write a `kind: "stop"` record, update `sessions.status = "completed"`, and record `durationMs`
-4. Cleanup: After recording ends, trigger `enforceQuota({ maxSessions: 5, maxBytes: 100 * 1024 * 1024 })`
-5. Fallback: If IndexedDB initialization fails (no permission, incognito mode quota restrictions, etc.), set an in-memory fallback flag, only send in real-time without prompts, and disable the replay button
-
-**Replay Workflow:**
-1. **Session Selection:** Default to replaying the most recent `status = "completed"` session
-2. **State Check:** If currently recording/generating, prompt user to stop before replaying
-3. **Connection:** Create a new WebSocket connection (or reuse existing, ensuring backend accepts new start/stop sequences; prefer new connection)
-4. **Replay Steps:**
-   - Send `kind: "start"` control message (consistent with current protocol, e.g., `{type: "start_recording"}`)
-   - Send audio chunks in recorded order
-   - Audio chunk sending uses `setTimeout` based on `deltaMs` timing; if timing is too dense, set minimum interval of 5-10ms to prevent blocking
-   - Send `kind: "stop"` control message at the end
-5. **Error Handling:** On errors (WebSocket closed, backend 4xx/5xx, etc.), log and prompt but keep session data for retry
-
-**Backend Compatibility:**
-- WebSocket protocol remains consistent: `start_recording` control message -> binary PCM chunks -> `stop_recording`. Replay follows the same protocol.
-- Backend allows multiple new connections from the same browser in a short time; if not allowed, frontend should wait for existing connection to return to idle before replaying
-
-**UI/UX:**
-- Add a "Replay Last Recording" button near the record button, with states: available/disabled/replaying
-- Disable record button during replay, show progress (based on `deltaMs` and chunk count)
-- If local storage is unavailable or quota insufficient, show reason in button tooltip
-
----
-
-## Testing
-
-Brainwave includes a comprehensive test suite to ensure reliability and maintainability. The tests cover various components:
-
-- **Audio Processing Tests:** Verify the correct handling of audio data, including resampling and buffer management.
-- **LLM Integration Tests:** Test the integration with language models (GPT and Gemini) for text processing.
-- **API Endpoint Tests:** Ensure the FastAPI endpoints work correctly, including streaming responses.
-- **WebSocket Tests:** Verify real-time communication for audio streaming.
-
-To run the tests:
-
-1. **Install Test Dependencies**
-
-   The test dependencies are included in `requirements.txt` (pytest, pytest-cov, pytest-asyncio, pytest-mock, httpx). Make sure they are installed:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Run Tests**
-
-   ```bash
-   # Run all tests
-   pytest tests/
-
-   # Run tests with verbose output
-   pytest -v tests/
-
-   # Run tests for a specific component
-   pytest tests/test_audio_processor.py
-   ```
-
-3. **Test Environment**
-
-   Tests use mocked API clients to avoid actual API calls. Set up the test environment variables:
-   ```bash
-   export OPENAI_API_KEY='test_key'  # For local testing
-   export GOOGLE_API_KEY='test_key'  # For local testing
-   ```
-
-The test suite is designed to run without making actual API calls, making it suitable for CI/CD pipelines.
-
----
+Vercel serves `public/*` as static assets, except for `/` and `/api/*`, which are rewritten to the function (see `vercel.json`).
 
 ## Conclusion
 

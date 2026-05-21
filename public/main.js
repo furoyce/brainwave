@@ -238,7 +238,18 @@ async function getToken(model) {
 }
 
 async function connectToOpenAI(model) {
-    const token = await getToken(model);
+    // Whisper-class models can't be used as the realtime session model — OpenAI
+    // returns 400. They're only valid as session.audio.input.transcription.model.
+    // When the user picks "GPT Realtime Whisper", run the session with
+    // gpt-realtime-mini and route input transcription through Whisper.
+    let sessionModel = model;
+    let transcriptionModel = null;
+    if (model === 'gpt-realtime-whisper') {
+        sessionModel = 'gpt-realtime-mini';
+        transcriptionModel = 'gpt-realtime-whisper';
+    }
+
+    const token = await getToken(sessionModel);
 
     // Create peer connection
     pc = new RTCPeerConnection();
@@ -264,6 +275,10 @@ async function connectToOpenAI(model) {
 
     dc.onopen = () => {
         console.log('Data channel open — configuring session');
+        const audioInput = { turn_detection: null };
+        if (transcriptionModel) {
+            audioInput.transcription = { model: transcriptionModel };
+        }
         dc.send(JSON.stringify({
             type: 'session.update',
             session: {
@@ -271,9 +286,7 @@ async function connectToOpenAI(model) {
                 output_modalities: ['text'],
                 instructions: TRANSCRIPTION_PROMPT,
                 audio: {
-                    input: {
-                        turn_detection: null,
-                    },
+                    input: audioInput,
                 },
             },
         }));
