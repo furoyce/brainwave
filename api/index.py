@@ -54,6 +54,7 @@ INDEX_HTML = """<!DOCTYPE html>
                     <select id="modelSelect">
                         <option value="gpt-realtime" selected>GPT Realtime</option>
                         <option value="gpt-realtime-mini">GPT Realtime Mini</option>
+                        <option value="gpt-realtime-whisper">GPT Realtime Whisper</option>
                     </select>
                 </div>
             </div>

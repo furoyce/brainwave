@@ -5,9 +5,9 @@
 - Live URL: https://brainwave.wingmate-builder.com
 - Repo: https://github.com/furoyce/brainwave
 - Linear project: **Brainwave** on team **JRF** (https://linear.app/jrf/project/brainwave-44f19339c4f9)
-- Stack: FastAPI + WebSocket backend (`main.py`, entrypoint `main:app`), static HTML/JS frontend, OpenAI Realtime API for transcription, Gemini for Readability/Correctness.
-- Deploy target: Vercel (project under team `wingmate-b5e12139`). The Python entrypoint module is named `main.py` so Vercel's FastAPI builder auto-detects it (the builder only auto-detects `main.py` / `app.py` / `api/index.py` etc.; non-standard module names need either a rename like this one, or an explicit `[tool.vercel] entrypoint` declaration in a fully-fleshed-out `pyproject.toml`).
-- `.vercelignore` excludes `tests/` so the FastAPI builder doesn't see a second `app` symbol via `tests/test_realtime_server.py`'s `from main import app`.
+- Stack: WebRTC frontend (browser connects directly to OpenAI Realtime via ephemeral tokens) + FastAPI serverless function at `api/index.py` for token minting, Readability / Correctness streaming, and transcript persistence. Static assets in `public/`. Postgres for transcript storage (via `psycopg2` and `DATABASE_URL`).
+- Deploy target: Vercel (project `brainwave` under team `wingmate-b5e12139`). `api/index.py` is at the conventional path Vercel's FastAPI builder auto-detects. `vercel.json` rewrites `/` and `/api/*` to the function; everything else is served from `public/` as a static asset.
+- `public/index.html` is the source-of-truth for the rendered UI, but the bytes actually served at `/` come from the `INDEX_HTML` string inlined in `api/index.py`. Keep the two in sync when adding model options or UI elements.
 
 ## Linear workflow (mandatory)
 
