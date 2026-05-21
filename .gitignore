@@ -17,3 +17,6 @@ tmp_extracted_responses_with_time.json
 
 # Test scripts (not for production)
 test_xai_voice.py
+.vercel
+.env*.local
+.playwright-mcp/
