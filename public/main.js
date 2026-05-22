@@ -417,10 +417,28 @@ function appendToTranscript(text) {
 }
 
 function handleResponseCreated() {
-    transcript.value = '';
+    // The server may emit response.created multiple times during a single
+    // recording session — the realtime model wraps up its current generation
+    // and starts a new one even when the user hasn't pressed Stop. Only the
+    // first response (when the transcript is empty) starts fresh; subsequent
+    // mid-stream responses append to the existing transcript with a newline
+    // separator so segments stay readable.
+    if (transcript.value.length > 0 && !transcript.value.endsWith('\n')) {
+        appendToTranscript('\n');
+    }
 }
 
 function handleResponseDone() {
+    // If the user hasn't clicked Stop, this is a mid-stream response.done
+    // from the server (the model finished its current generation but the
+    // user is still recording). Do NOT tear down the session — that was the
+    // bug that capped sessions at ~30s. Keep the connection open and wait
+    // for either the next response cycle or the user's Stop click.
+    if (!pendingStop) {
+        console.log('Mid-stream response.done; session stays open');
+        return;
+    }
+
     const durationSeconds = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
     stopTimer();
     updateConnectionStatus('idle');
