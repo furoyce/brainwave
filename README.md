@@ -5,6 +5,7 @@
 1. [Introduction](#introduction)
 2. [Deployment](#deployment)
 3. [Code Structure & Architecture](#code-structure--architecture)
+4. [Tests](#tests)
 
 ---
 
@@ -43,7 +44,7 @@ Brainwave runs on Vercel: the Python serverless function in `api/index.py` is th
 
 ### Required environment variables
 
-- `OPENAI_API_KEY` — used to mint ephemeral session tokens for the OpenAI Realtime API and to back the Readability / Correctness endpoints.
+- `OPENAI_API_KEY` — used to mint ephemeral session tokens for the OpenAI Realtime API and to back the Readability / Correctness / Read aloud endpoints.
 - `DATABASE_URL` — Postgres connection string used by `api/index.py` to persist transcripts.
 
 ### Local development
@@ -65,20 +66,62 @@ Pushes to `master` trigger a production deploy on the `brainwave` Vercel project
 
 A single Vercel serverless function built on FastAPI. Routes:
 
-- `POST /api/token` — mints an ephemeral OpenAI Realtime session token that the browser uses to open a direct WebRTC connection to the OpenAI API.
+- `POST /api/token` — mints an ephemeral OpenAI Realtime session token that the browser uses to open a direct WebRTC connection to the OpenAI API. The requested model is validated against the catalog below and determines which session shape is minted (`build_session_config`).
+- `GET /api/models` — the model catalog the frontend reads: realtime models, transcription models, and the speech-generation model with its voices.
 - `POST /api/readability` and `POST /api/correctness` — streaming text-processing endpoints.
+- `POST /api/speech` — proxies OpenAI's speech-generation endpoint (`gpt-4o-mini-tts`) so the Editor can read text aloud without exposing the API key. Input is capped at 4096 characters per request, matching the upstream limit; the browser splits longer documents.
 - `POST /api/transcripts` — persists completed transcripts to Postgres.
-- `GET /` — serves the inlined `INDEX_HTML` (the source-of-truth duplicate of `public/index.html`).
+- `GET /` — serves the inlined `INDEX_HTML`, regenerated from `public/index.html` rather than hand-edited.
 
 The function imports `openai`, `httpx`, and `psycopg2` directly; it does not depend on any other modules in the repo.
 
 ### Frontend — `public/`
 
 - `public/index.html` — top bar with Transcribe / Editor mode toggle and model selector; main content area; bottom controls (record / clear / copy).
-- `public/main.js` — WebRTC connection to OpenAI Realtime, marker-detection of the transcript stream, Editor mode with live markdown preview, and the Readability / Correctness clients.
+- `public/main.js` — WebRTC connection to OpenAI Realtime, transcript stream handling for both session types, Editor mode with live markdown preview, the Readability / Correctness clients, and the Read aloud (text-to-speech) client.
 - `public/style.css` — styles for both modes.
 
+`public/index.html` is the file to edit; the bytes actually served at `/` come from the `INDEX_HTML` string in `api/index.py`. They are kept byte-identical, so after editing the HTML, copy it across rather than editing both by hand.
+
 Vercel serves `public/*` as static assets, except for `/` and `/api/*`, which are rewritten to the function (see `vercel.json`).
+
+### Model selection
+
+The dropdown offers two families, and they behave differently enough that the grouping is part of the UI:
+
+| Group | Model | What you get |
+| --- | --- | --- |
+| Transcribe & clean up | `gpt-realtime-2.1` (default) | Speech-to-speech model held to text output. Applies `TRANSCRIPTION_PROMPT`: punctuation, casing, filler removal, paragraphing — never translation. |
+| | `gpt-realtime-2.1-mini` | Same behaviour, distilled and cheaper. Replaces the now-deprecated `gpt-realtime-mini`. |
+| | `gpt-realtime-1.5` | Non-reasoning, so it starts talking back sooner. |
+| Verbatim speech-to-text | `gpt-live-transcribe` | OpenAI's recommended realtime STT model. Verbatim — no cleanup, no filler removal. Billed per minute of audio. |
+| | `gpt-realtime-whisper` | Streaming STT with a tunable latency/accuracy `delay`. Also verbatim, also per-minute. |
+
+The two families need different session shapes, which is why `/api/token` builds the request body rather than passing a model string straight through:
+
+- **Realtime models** run as `type: "realtime"` sessions and stream `response.output_text.delta` events.
+- **Speech-to-text models** are not valid session models at all. They run as `type: "transcription"` sessions and stream `conversation.item.input_audio_transcription.delta` / `.completed` events instead. `gpt-realtime-whisper` additionally rejects voice activity detection, so both STT models run with `turn_detection: null` and commit the audio buffer when the user stops recording.
+
+Because a transcription session emits no `response.done`, the frontend finalizes it when the transcription events go quiet rather than on a single terminating event.
+
+### Read aloud
+
+The Editor toolbar can read the document back using `gpt-4o-mini-tts`, OpenAI's speech-generation model. Markdown is flattened first so the voice doesn't pronounce syntax, and the text is split on paragraph and sentence boundaries to stay under the endpoint's 4096-character limit — the opening chunk is kept short so audio starts quickly, and each chunk is prefetched while the previous one plays.
+
+Thirteen voices are available (`marin` is the default; OpenAI recommends `marin` or `cedar`), and the choice persists in `localStorage`. An "AI voice" badge is shown during playback: OpenAI's usage policies require disclosing that the voice is synthetic.
+
+---
+
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest tests/
+```
+
+`tests/test_api.py` pins the model catalog and the session shape each model is minted with — the drift that breaks recording in production is a model being deprecated upstream while the dropdown keeps offering it.
+
+---
 
 ## Conclusion
 

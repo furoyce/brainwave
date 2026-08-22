@@ -13,6 +13,7 @@ let pendingStop = false; // User clicked Stop — disconnect after final respons
 let isFirstResponse = true;
 let timerInterval;
 let startTime;
+let currentSessionType = 'realtime'; // 'realtime' | 'transcription'
 
 // IndexedDB state (kept for potential future replay)
 let db = null;
@@ -20,6 +21,19 @@ let storageAvailable = false;
 
 // Current mode: 'transcribe' or 'editor'
 let currentMode = 'transcribe';
+
+// Fallback when the model dropdown isn't in the DOM. Must stay in REALTIME_MODELS
+// in api/index.py — anything else is rejected by /api/token.
+const DEFAULT_MODEL = 'gpt-realtime-2.1';
+
+// Read-aloud (text-to-speech) state
+const TTS_VOICE_STORAGE_KEY = 'brainwave-tts-voice';
+const TTS_FIRST_CHUNK_CHARS = 700;   // keep the opening chunk short so audio starts fast
+const TTS_CHUNK_CHARS = 1800;        // /api/speech caps a single request at 4096 chars
+let ttsPlaying = false;
+let ttsController = null;   // AbortController for in-flight /api/speech requests
+let ttsAudio = null;        // currently playing HTMLAudioElement
+let ttsEndCurrent = null;   // resolves the promise awaiting the current clip
 
 // Transcription prompt for the realtime conversation model
 const TRANSCRIPTION_PROMPT = `Role: You are a realtime speech transcription post-processor for microphone audio.
@@ -78,6 +92,10 @@ const toolbarLink = document.getElementById('toolbarLink');
 const toolbarImage = document.getElementById('toolbarImage');
 const toolbarReadability = document.getElementById('toolbarReadability');
 const toolbarCorrectness = document.getElementById('toolbarCorrectness');
+const toolbarReadAloud = document.getElementById('toolbarReadAloud');
+const readAloudLabel = document.getElementById('readAloudLabel');
+const voiceSelect = document.getElementById('voiceSelect');
+const ttsBadge = document.getElementById('ttsBadge');
 
 // --- Configuration ---
 const urlParams = new URLSearchParams(window.location.search);
@@ -210,7 +228,7 @@ async function initIndexedDB() {
 // WebRTC connection to OpenAI Realtime API
 // ============================================================
 
-async function getToken(model) {
+async function getSession(model) {
     const response = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -220,23 +238,52 @@ async function getToken(model) {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to get session token');
     }
-    const data = await response.json();
-    return data.token;
+    // { token, model, session_type }
+    return await response.json();
+}
+
+// A realtime session runs the audio through a speech-to-speech model that we
+// hold to text-only output, so the transcript arrives as response deltas shaped
+// by TRANSCRIPTION_PROMPT. A transcription session runs a speech-to-text model
+// instead: no model response, just verbatim input-audio transcription events,
+// billed per minute of audio. The server picks the shape (build_session_config
+// in api/index.py) and tells us which one it minted.
+function realtimeSessionUpdate() {
+    return {
+        type: 'session.update',
+        session: {
+            type: 'realtime',
+            output_modalities: ['text'],
+            instructions: TRANSCRIPTION_PROMPT,
+            audio: {
+                input: { turn_detection: null },
+            },
+        },
+    };
+}
+
+function transcriptionSessionUpdate(model) {
+    // gpt-realtime-whisper doesn't support VAD at all, so both speech-to-text
+    // models run with turn detection off and commit the buffer on Stop.
+    return {
+        type: 'session.update',
+        session: {
+            type: 'transcription',
+            audio: {
+                input: {
+                    transcription: { model },
+                    turn_detection: null,
+                },
+            },
+        },
+    };
 }
 
 async function connectToOpenAI(model) {
-    // Whisper-class models can't be used as the realtime session model — OpenAI
-    // returns 400. They're only valid as session.audio.input.transcription.model.
-    // When the user picks "GPT Realtime Whisper", run the session with
-    // gpt-realtime-mini and route input transcription through Whisper.
-    let sessionModel = model;
-    let transcriptionModel = null;
-    if (model === 'gpt-realtime-whisper') {
-        sessionModel = 'gpt-realtime-mini';
-        transcriptionModel = 'gpt-realtime-whisper';
-    }
-
-    const token = await getToken(sessionModel);
+    const session = await getSession(model);
+    const token = session.token;
+    currentSessionType = session.session_type || 'realtime';
+    resetTranscriptionSegments();
 
     // Create peer connection
     pc = new RTCPeerConnection();
@@ -261,22 +308,12 @@ async function connectToOpenAI(model) {
     dc = pc.createDataChannel('oai-events');
 
     dc.onopen = () => {
-        console.log('Data channel open — configuring session');
-        const audioInput = { turn_detection: null };
-        if (transcriptionModel) {
-            audioInput.transcription = { model: transcriptionModel };
-        }
-        dc.send(JSON.stringify({
-            type: 'session.update',
-            session: {
-                type: 'realtime',
-                output_modalities: ['text'],
-                instructions: TRANSCRIPTION_PROMPT,
-                audio: {
-                    input: audioInput,
-                },
-            },
-        }));
+        console.log(`Data channel open — configuring ${currentSessionType} session`);
+        dc.send(JSON.stringify(
+            currentSessionType === 'transcription'
+                ? transcriptionSessionUpdate(model)
+                : realtimeSessionUpdate()
+        ));
         updateConnectionStatus('connected');
     };
 
@@ -340,6 +377,8 @@ function disconnectWebRTC() {
 
 function handleConnectionLost() {
     console.warn('WebRTC connection lost');
+    clearTranscriptionTimers();
+    pendingStop = false;
     isRecording = false;
     recordButton.classList.remove('recording');
     updateConnectionStatus('idle');
@@ -367,6 +406,18 @@ function handleRealtimeEvent(data) {
 
         case 'response.created':
             handleResponseCreated();
+            break;
+
+        case 'conversation.item.input_audio_transcription.delta':
+            handleTranscriptionDelta(data);
+            break;
+
+        case 'conversation.item.input_audio_transcription.completed':
+            handleTranscriptionCompleted(data);
+            break;
+
+        case 'conversation.item.input_audio_transcription.failed':
+            handleTranscriptionFailed(data);
             break;
 
         case 'response.done':
@@ -416,6 +467,102 @@ function appendToTranscript(text) {
     }
 }
 
+// ============================================================
+// Transcription sessions (speech-to-text models)
+// ============================================================
+
+// Deltas stream in per conversation item and a later delta can revise earlier
+// text, so segments are kept addressable by item_id and the transcript is
+// re-rendered from them rather than appended to blindly.
+let transcriptionSegments = [];
+let transcriptionIndex = new Map();
+
+function resetTranscriptionSegments() {
+    transcriptionSegments = [];
+    transcriptionIndex = new Map();
+}
+
+function transcriptionSegment(itemId) {
+    const key = itemId || '_';
+    if (!transcriptionIndex.has(key)) {
+        transcriptionIndex.set(key, transcriptionSegments.length);
+        transcriptionSegments.push({ itemId: key, text: '' });
+    }
+    return transcriptionSegments[transcriptionIndex.get(key)];
+}
+
+function renderTranscriptionSegments() {
+    const text = transcriptionSegments
+        .map((segment) => segment.text.trim())
+        .filter(Boolean)
+        .join('\n\n');
+
+    transcript.value = text;
+    transcript.scrollTop = transcript.scrollHeight;
+
+    if (currentMode === 'editor') {
+        editorTextarea.value = text;
+        updateEditorPreview();
+    }
+}
+
+function handleTranscriptionDelta(data) {
+    const delta = data.delta || '';
+    if (delta) {
+        transcriptionSegment(data.item_id).text += delta;
+        renderTranscriptionSegments();
+    }
+    noteTranscriptionActivity();
+}
+
+function handleTranscriptionCompleted(data) {
+    // The completion event carries the authoritative transcript for the item;
+    // it supersedes whatever the deltas accumulated.
+    if (typeof data.transcript === 'string') {
+        transcriptionSegment(data.item_id).text = data.transcript;
+        renderTranscriptionSegments();
+    }
+    noteTranscriptionActivity();
+}
+
+function handleTranscriptionFailed(data) {
+    console.error('Transcription failed:', data.error?.message || data);
+    noteTranscriptionActivity();
+}
+
+// A transcription session never emits response.done, so there's no single event
+// that means "the transcript is complete". After the final commit, wait for the
+// transcription events to go quiet — with a hard ceiling in case none arrive.
+const TRANSCRIPTION_QUIET_MS = 1200;
+const TRANSCRIPTION_MAX_WAIT_MS = 6000;
+let transcriptionQuietTimer = null;
+let transcriptionDeadlineTimer = null;
+
+function clearTranscriptionTimers() {
+    clearTimeout(transcriptionQuietTimer);
+    clearTimeout(transcriptionDeadlineTimer);
+    transcriptionQuietTimer = null;
+    transcriptionDeadlineTimer = null;
+}
+
+function noteTranscriptionActivity() {
+    if (!pendingStop) return;
+    clearTimeout(transcriptionQuietTimer);
+    transcriptionQuietTimer = setTimeout(finalizeTranscriptionSession, TRANSCRIPTION_QUIET_MS);
+}
+
+function waitForFinalTranscription() {
+    clearTranscriptionTimers();
+    transcriptionQuietTimer = setTimeout(finalizeTranscriptionSession, TRANSCRIPTION_QUIET_MS);
+    transcriptionDeadlineTimer = setTimeout(finalizeTranscriptionSession, TRANSCRIPTION_MAX_WAIT_MS);
+}
+
+function finalizeTranscriptionSession() {
+    if (!pendingStop) return;
+    clearTranscriptionTimers();
+    finishRecordingSession();
+}
+
 function handleResponseCreated() {
     // The server may emit response.created multiple times during a single
     // recording session — the realtime model wraps up its current generation
@@ -439,6 +586,11 @@ function handleResponseDone() {
         return;
     }
 
+    finishRecordingSession();
+}
+
+// Shared tail of a recording, whichever session type produced the transcript.
+function finishRecordingSession() {
     const durationSeconds = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
     stopTimer();
     updateConnectionStatus('idle');
@@ -461,7 +613,7 @@ function handleResponseDone() {
 
 async function saveTranscript(text, durationSeconds) {
     const modelSelect = document.getElementById('modelSelect');
-    const model = modelSelect ? modelSelect.value : 'gpt-realtime';
+    const model = modelSelect ? modelSelect.value : DEFAULT_MODEL;
     try {
         const response = await fetch('/api/transcripts', {
             method: 'POST',
@@ -483,6 +635,8 @@ function handleError(data) {
     const msg = data.error?.message || JSON.stringify(data);
     console.error('OpenAI error:', msg);
     alert('OpenAI error: ' + msg);
+    clearTranscriptionTimers();
+    pendingStop = false;
     stopTimer();
     updateConnectionStatus('idle');
     isRecording = false;
@@ -497,14 +651,19 @@ function handleError(data) {
 async function startRecording() {
     if (isRecording) return;
 
+    // The mic would pick up the read-aloud voice and transcribe it back.
+    if (ttsPlaying) stopReadAloud();
+
     try {
         transcript.value = '';
         enhancedTranscript.value = '';
         isFirstResponse = true;
         pendingStop = false;
+        clearTranscriptionTimers();
+        resetTranscriptionSegments();
 
         const modelSelect = document.getElementById('modelSelect');
-        const selectedModel = modelSelect ? modelSelect.value : 'gpt-realtime';
+        const selectedModel = modelSelect ? modelSelect.value : DEFAULT_MODEL;
 
         updateConnectionStatus('connecting');
         await connectToOpenAI(selectedModel);
@@ -530,12 +689,19 @@ async function stopRecording() {
     recordButton.classList.remove('recording');
 
     if (dc && dc.readyState === 'open') {
-        // Commit any remaining audio and request a final response
+        // Commit any remaining audio to close out the final turn
         dc.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-        dc.send(JSON.stringify({ type: 'response.create' }));
-        // handleResponseDone sees pendingStop=true -> disconnects
+
+        if (currentSessionType === 'transcription') {
+            // No response cycle to wait on — finalize once transcripts settle.
+            waitForFinalTranscription();
+        } else {
+            dc.send(JSON.stringify({ type: 'response.create' }));
+            // handleResponseDone sees pendingStop=true -> disconnects
+        }
     } else {
         pendingStop = false;
+        clearTranscriptionTimers();
         stopTimer();
         updateConnectionStatus('idle');
         disconnectWebRTC();
@@ -623,6 +789,257 @@ async function runCorrectness(inputText) {
     }
 }
 
+
+// ============================================================
+// Read aloud (text-to-speech via /api/speech -> gpt-4o-mini-tts)
+// ============================================================
+
+function selectedVoice() {
+    if (voiceSelect && voiceSelect.value) return voiceSelect.value;
+    return 'marin';
+}
+
+function initializeVoicePreference() {
+    if (!voiceSelect) return;
+    let saved = null;
+    try {
+        saved = localStorage.getItem(TTS_VOICE_STORAGE_KEY);
+    } catch {
+        // Private browsing / storage disabled — fall back to the markup default.
+    }
+    if (saved && Array.from(voiceSelect.options).some((o) => o.value === saved)) {
+        voiceSelect.value = saved;
+    }
+    voiceSelect.addEventListener('change', () => {
+        try {
+            localStorage.setItem(TTS_VOICE_STORAGE_KEY, voiceSelect.value);
+        } catch {
+            // Ignore — the choice just won't persist across reloads.
+        }
+        // Switching voices mid-playback would splice two speakers together.
+        if (ttsPlaying) stopReadAloud();
+    });
+}
+
+// A heading is a sentence to the ear, so give it a terminator the voice will
+// pause on — matching the script, since a CJK heading read with an ASCII period
+// is the kind of thing that makes synthesis stumble.
+function endHeadingSentence(heading) {
+    if (/[.!?:;,。！？；：，]$/.test(heading)) return heading;
+    return heading + (/[\u3040-\u30ff\u4e00-\u9fff]$/.test(heading) ? '。' : '.');
+}
+
+// The reader shouldn't pronounce syntax, so flatten markdown to the words a
+// human would actually say.
+function stripMarkdownForSpeech(text) {
+    // Every line-prefix pattern below uses [ \t] rather than \s: \s matches
+    // newlines, so a greedy prefix swallows the blank line above a list item or
+    // heading and silently welds two paragraphs together.
+    return text
+        .replace(/```[\s\S]*?```/g, '\n\n')               // fenced code blocks
+        .replace(/^[ \t]{0,3}(?:---+|\*\*\*+|___+)[ \t]*$/gm, '')   // horizontal rules
+        .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')         // images -> alt text
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')          // links -> link text
+        .replace(/^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm, (_, heading) =>
+            endHeadingSentence(heading))
+        .replace(/^[ \t]{0,3}>[ \t]?/gm, '')               // blockquote markers
+        .replace(/^[ \t]*[-*+][ \t]+/gm, '')               // bullet markers
+        .replace(/^[ \t]*\d+\.[ \t]+/gm, '')              // ordered list markers
+        .replace(/\*\*([^\n]+?)\*\*/g, '$1')                          // **bold**
+        .replace(/(^|[\s(])__([^\n]+?)__(?=$|[\s).,!?;:])/g, '$1$2')  // __bold__
+        .replace(/\*([^\n*]+?)\*/g, '$1')                             // *italic*
+        .replace(/(^|[\s(])_([^\n_]+?)_(?=$|[\s).,!?;:])/g, '$1$2')   // _italic_ (bounded so snake_case survives)
+        .replace(/~~(.*?)~~/g, '$1')                                  // strikethrough
+        .replace(/`([^`]+)`/g, '$1')                      // inline code
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+// /api/speech rejects input over 4096 characters, and a shorter opening chunk
+// gets audio playing sooner. Split on paragraph breaks, then sentences, and
+// only cut mid-sentence when a single sentence is itself too long.
+function chunkTextForSpeech(text) {
+    const pieces = [];
+    for (const paragraph of text.split(/\n{2,}/)) {
+        const trimmed = paragraph.trim();
+        if (trimmed) pieces.push(trimmed);
+    }
+
+    const chunks = [];
+    let current = '';
+    const limit = () => (chunks.length === 0 ? TTS_FIRST_CHUNK_CHARS : TTS_CHUNK_CHARS);
+
+    const flush = () => {
+        if (current.trim()) chunks.push(current.trim());
+        current = '';
+    };
+
+    const addUnit = (unit) => {
+        if (!current) {
+            current = unit;
+        } else if (current.length + unit.length + 2 <= limit()) {
+            current += '\n\n' + unit;
+        } else {
+            flush();
+            current = unit;
+        }
+    };
+
+    for (const piece of pieces) {
+        if (piece.length <= limit()) {
+            addUnit(piece);
+            continue;
+        }
+        // Too long for one chunk: break it at sentence boundaries.
+        flush();
+        for (const sentence of splitSentences(piece)) {
+            if (sentence.length <= TTS_CHUNK_CHARS) {
+                if (current && current.length + sentence.length + 1 > limit()) flush();
+                current = current ? current + ' ' + sentence : sentence;
+            } else {
+                flush();
+                for (let i = 0; i < sentence.length; i += TTS_CHUNK_CHARS) {
+                    chunks.push(sentence.slice(i, i + TTS_CHUNK_CHARS));
+                }
+            }
+        }
+        flush();
+    }
+    flush();
+
+    return chunks;
+}
+
+function splitSentences(text) {
+    // Keep the terminator with its sentence; covers ASCII and CJK punctuation.
+    const parts = text.match(/[^.!?。！？]+[.!?。！？]+["'”’]?\s*|[^.!?。！？]+$/g);
+    return (parts || [text]).map((part) => part.trim()).filter(Boolean);
+}
+
+async function fetchSpeech(text, voice, signal) {
+    const response = await fetch('/api/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice }),
+        signal,
+    });
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || `Speech synthesis failed (${response.status})`);
+    }
+    return await response.blob();
+}
+
+function playSpeechBlob(blob) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        ttsAudio = audio;
+
+        let settled = false;
+        const finish = (err) => {
+            if (settled) return;
+            settled = true;
+            ttsEndCurrent = null;
+            URL.revokeObjectURL(url);
+            if (ttsAudio === audio) ttsAudio = null;
+            if (err) reject(err); else resolve();
+        };
+
+        // stopReadAloud() calls this to unblock the playback loop immediately.
+        ttsEndCurrent = () => finish(null);
+        audio.onended = () => finish(null);
+        audio.onerror = () => finish(new Error('Audio playback failed'));
+
+        audio.play().catch((err) => finish(err));
+    });
+}
+
+function setReadAloudState(playing) {
+    ttsPlaying = playing;
+    if (toolbarReadAloud) {
+        toolbarReadAloud.classList.toggle('active', playing);
+        toolbarReadAloud.title = playing ? 'Stop reading' : 'Read aloud (AI-generated voice)';
+    }
+    if (readAloudLabel) readAloudLabel.textContent = playing ? 'Stop' : 'Read aloud';
+    // OpenAI's usage policies require disclosing that the voice is AI-generated.
+    if (ttsBadge) ttsBadge.hidden = !playing;
+}
+
+function stopReadAloud() {
+    setReadAloudState(false);
+    if (ttsController) {
+        ttsController.abort();
+        ttsController = null;
+    }
+    if (ttsAudio) {
+        ttsAudio.pause();
+    }
+    if (ttsEndCurrent) {
+        const release = ttsEndCurrent;
+        ttsEndCurrent = null;
+        release();
+    }
+}
+
+async function startReadAloud(inputText) {
+    const plain = stripMarkdownForSpeech(inputText || '');
+    if (!plain) {
+        alert('Nothing to read aloud yet.');
+        return;
+    }
+
+    const chunks = chunkTextForSpeech(plain);
+    if (!chunks.length) return;
+
+    if (ttsPlaying) stopReadAloud();
+
+    const voice = selectedVoice();
+    const controller = new AbortController();
+    const signal = controller.signal;
+    ttsController = controller;
+    setReadAloudState(true);
+
+    try {
+        // Fetch the next chunk while the current one plays, so playback only
+        // stalls on the very first request.
+        let pending = fetchSpeech(chunks[0], voice, signal);
+        for (let i = 0; i < chunks.length; i++) {
+            const currentRequest = pending;
+            pending = i + 1 < chunks.length ? fetchSpeech(chunks[i + 1], voice, signal) : null;
+            // A prefetch we never get to await (stopped early) would otherwise
+            // surface as an unhandled rejection; the loop still sees the real
+            // error when it awaits this promise on the next pass.
+            if (pending) pending.catch(() => {});
+
+            const blob = await currentRequest;
+            if (!ttsPlaying || signal.aborted) break;
+            await playSpeechBlob(blob);
+            if (!ttsPlaying || signal.aborted) break;
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            console.error('Read aloud failed:', err);
+            alert('Read aloud failed: ' + err.message);
+        }
+    } finally {
+        // Only tear down if a newer read-aloud hasn't already taken over.
+        if (ttsController === controller) {
+            if (ttsPlaying) stopReadAloud();
+            ttsController = null;
+        }
+    }
+}
+
+function toggleReadAloud() {
+    if (ttsPlaying) {
+        stopReadAloud();
+        return;
+    }
+    startReadAloud(editorTextarea ? editorTextarea.value : transcript.value);
+}
+
 // Wire up legacy hidden buttons for backward compatibility
 if (readabilityButton) readabilityButton.onclick = () => runReadability(transcript.value);
 if (correctnessButton) correctnessButton.onclick = () => runCorrectness(transcript.value);
@@ -633,6 +1050,10 @@ if (correctnessButton) correctnessButton.onclick = () => runCorrectness(transcri
 
 function switchMode(mode) {
     currentMode = mode;
+
+    // Read aloud lives in the editor; don't leave a voice running behind a
+    // view the user has navigated away from.
+    if (mode !== 'editor' && ttsPlaying) stopReadAloud();
 
     if (mode === 'transcribe') {
         modeTranscribe.classList.add('active');
@@ -878,6 +1299,7 @@ function insertImageTemplate() {
 // ============================================================
 
 function clearAll() {
+    stopReadAloud();
     transcript.value = '';
     enhancedTranscript.value = '';
     if (editorTextarea) editorTextarea.value = '';
@@ -989,6 +1411,9 @@ if (toolbarCorrectness) toolbarCorrectness.onclick = () => {
     runCorrectness(text);
 };
 
+// Read aloud from the editor toolbar
+if (toolbarReadAloud) toolbarReadAloud.onclick = toggleReadAloud;
+
 // Editor textarea -> live preview
 if (editorTextarea) {
     editorTextarea.addEventListener('input', () => {
@@ -1017,6 +1442,8 @@ if (themeToggleBtn) themeToggleBtn.onclick = toggleTheme;
 document.addEventListener('DOMContentLoaded', async () => {
     await initIndexedDB();
     initializeTheme();
+    initializeVoicePreference();
+    setReadAloudState(false);
     updateConnectionStatus('idle');
     if (autoStart && !isRecording) startRecording();
 });

@@ -1,13 +1,13 @@
 """
 Vercel serverless API endpoints for Brainwave.
-Provides ephemeral OpenAI Realtime tokens and text processing endpoints.
+Provides ephemeral OpenAI Realtime tokens, text processing, and text-to-speech.
 """
 
 import os
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 from openai import AsyncOpenAI
@@ -52,15 +52,21 @@ INDEX_HTML = """<!DOCTYPE html>
             <div class="top-bar-right">
                 <div class="model-selector">
                     <select id="modelSelect">
-                        <option value="gpt-realtime" selected>GPT Realtime</option>
-                        <option value="gpt-realtime-mini">GPT Realtime Mini</option>
-                        <option value="gpt-realtime-whisper">GPT Realtime Whisper</option>
+                        <optgroup label="Transcribe &amp; clean up">
+                            <option value="gpt-realtime-2.1" selected>GPT Realtime 2.1</option>
+                            <option value="gpt-realtime-2.1-mini">GPT Realtime 2.1 Mini</option>
+                            <option value="gpt-realtime-1.5">GPT Realtime 1.5</option>
+                        </optgroup>
+                        <optgroup label="Verbatim speech-to-text">
+                            <option value="gpt-live-transcribe">GPT Live Transcribe</option>
+                            <option value="gpt-realtime-whisper">GPT Realtime Whisper</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
         </header>
 
-        <!-- Timer -->
+        <!-- Timer (hidden by default, shown during recording) -->
         <div id="timer" class="timer">00:00</div>
 
         <!-- Main Content -->
@@ -202,6 +208,33 @@ INDEX_HTML = """<!DOCTYPE html>
                             </svg>
                             <span class="toolbar-label">Correctness</span>
                         </button>
+                        <button class="toolbar-btn" id="toolbarReadAloud" title="Read aloud (AI-generated voice)">
+                            <svg class="icon-play" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                            </svg>
+                            <svg class="icon-stop" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                            </svg>
+                            <span class="toolbar-label" id="readAloudLabel">Read aloud</span>
+                        </button>
+                        <select id="voiceSelect" class="toolbar-select" title="Voice (AI-generated)" aria-label="Read-aloud voice">
+                            <option value="marin" selected>Marin</option>
+                            <option value="cedar">Cedar</option>
+                            <option value="alloy">Alloy</option>
+                            <option value="ash">Ash</option>
+                            <option value="ballad">Ballad</option>
+                            <option value="coral">Coral</option>
+                            <option value="echo">Echo</option>
+                            <option value="fable">Fable</option>
+                            <option value="nova">Nova</option>
+                            <option value="onyx">Onyx</option>
+                            <option value="sage">Sage</option>
+                            <option value="shimmer">Shimmer</option>
+                            <option value="verse">Verse</option>
+                        </select>
+                        <span class="tts-badge" id="ttsBadge" hidden>AI voice</span>
                     </div>
                 </div>
                 <div class="editor-split">
@@ -214,7 +247,7 @@ INDEX_HTML = """<!DOCTYPE html>
             </div>
         </main>
 
-        <!-- Enhanced transcript (hidden) -->
+        <!-- Enhanced transcript (hidden, used for readability/correctness output) -->
         <textarea id="enhancedTranscript" class="sr-only"></textarea>
 
         <!-- Bottom Controls -->
@@ -296,20 +329,84 @@ Keep the tone professional but friendly. If everything is correct, simply state 
 
 Below is the text to analyze:"""
 
+# --- Model catalog ---
+
+# Realtime speech-to-speech models. Brainwave runs them text-out only: the model
+# hears the audio and emits a cleaned-up transcript shaped by TRANSCRIPTION_PROMPT.
+REALTIME_MODELS = (
+    "gpt-realtime-2.1",
+    "gpt-realtime-2.1-mini",
+    "gpt-realtime-1.5",
+)
+
+# Streaming speech-to-text models. These are not valid as a session model — they
+# only run inside a dedicated transcription session, where they emit verbatim
+# transcript deltas and are billed per minute of audio instead of per token.
+TRANSCRIPTION_MODELS = (
+    "gpt-live-transcribe",
+    "gpt-realtime-whisper",
+)
+
+DEFAULT_MODEL = "gpt-realtime-2.1"
+
+SPEECH_MODEL = "gpt-4o-mini-tts"
+
+SPEECH_VOICES = (
+    "alloy", "ash", "ballad", "cedar", "coral", "echo", "fable",
+    "marin", "nova", "onyx", "sage", "shimmer", "verse",
+)
+
+DEFAULT_VOICE = "marin"
+
+# /v1/audio/speech rejects input longer than this.
+SPEECH_INPUT_LIMIT = 4096
+
+
+def build_session_config(model: str) -> dict:
+    """Map a model id to the Realtime session config that can actually run it.
+
+    Realtime models run as `type: "realtime"` sessions. Speech-to-text models
+    are only accepted inside a `type: "transcription"` session, which returns
+    conversation.item.input_audio_transcription.* events instead of model
+    responses. `gpt-realtime-whisper` additionally requires turn detection to be
+    off, so both STT models commit turns explicitly when the user hits stop.
+    """
+    if model in REALTIME_MODELS:
+        return {"type": "realtime", "model": model}
+    if model in TRANSCRIPTION_MODELS:
+        return {
+            "type": "transcription",
+            "audio": {
+                "input": {
+                    "transcription": {"model": model},
+                    "turn_detection": None,
+                }
+            },
+        }
+    raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
+
+
 # --- Request models ---
 
 
 class TokenRequest(BaseModel):
-    model: str = Field(default="gpt-realtime")
+    model: str = Field(default=DEFAULT_MODEL)
 
 
 class TextRequest(BaseModel):
     text: str = Field(..., description="Text to process")
 
 
+class SpeechRequest(BaseModel):
+    text: str = Field(..., description="Text to read aloud")
+    voice: str = Field(default=DEFAULT_VOICE)
+    instructions: Optional[str] = Field(default=None)
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
+
+
 class TranscriptSaveRequest(BaseModel):
     text: str = Field(..., description="Transcript text")
-    model: str = Field(default="gpt-realtime")
+    model: str = Field(default=DEFAULT_MODEL)
     duration_seconds: int = Field(default=0)
 
 
@@ -331,9 +428,22 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/models")
+async def list_models():
+    """Expose the model catalog so the frontend never has to hardcode session shapes."""
+    return {
+        "default": DEFAULT_MODEL,
+        "realtime": list(REALTIME_MODELS),
+        "transcription": list(TRANSCRIPTION_MODELS),
+        "speech": {"model": SPEECH_MODEL, "voices": list(SPEECH_VOICES), "default_voice": DEFAULT_VOICE},
+    }
+
+
 @app.post("/api/token")
 async def create_token(request: TokenRequest):
     """Create an ephemeral OpenAI Realtime API token for browser WebRTC connections."""
+    session = build_session_config(request.model)
+
     try:
         api_key = get_openai_key()
 
@@ -344,12 +454,7 @@ async def create_token(request: TokenRequest):
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "session": {
-                        "type": "realtime",
-                        "model": request.model,
-                    }
-                },
+                json={"session": session},
                 timeout=10.0,
             )
 
@@ -361,12 +466,74 @@ async def create_token(request: TokenRequest):
             )
 
         data = response.json()
-        return {"token": data["value"], "model": request.model}
+        return {
+            "token": data["value"],
+            "model": request.model,
+            "session_type": session["type"],
+        }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Token creation error: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+
+
+@app.post("/api/speech")
+async def synthesize_speech(request: SpeechRequest):
+    """Read text aloud with gpt-4o-mini-tts and return the audio to the browser.
+
+    Proxied rather than called from the client so the API key stays on the server.
+    The response is buffered instead of streamed: a request is capped at
+    SPEECH_INPUT_LIMIT characters, so the MP3 is small enough to send in one go
+    and buffering keeps upstream errors reportable as real HTTP status codes.
+    Callers split longer documents into several requests.
+    """
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No text to read aloud")
+    if len(text) > SPEECH_INPUT_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text exceeds the {SPEECH_INPUT_LIMIT}-character limit for a single speech request",
+        )
+    if request.voice not in SPEECH_VOICES:
+        raise HTTPException(status_code=400, detail=f"Unsupported voice: {request.voice}")
+
+    api_key = get_openai_key()
+    payload = {
+        "model": SPEECH_MODEL,
+        "input": text,
+        "voice": request.voice,
+        "response_format": "mp3",
+        "speed": request.speed,
+    }
+    if request.instructions:
+        payload["instructions"] = request.instructions
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60.0,
+            )
+    except httpx.HTTPError as e:
+        logger.error(f"Speech request failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Speech request failed: {type(e).__name__}")
+
+    if response.status_code != 200:
+        detail = response.text[:200]
+        logger.error(f"Speech synthesis failed: {response.status_code} {detail}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenAI API error {response.status_code}: {detail}",
+        )
+
+    return Response(content=response.content, media_type="audio/mpeg")
 
 
 @app.post("/api/readability")
