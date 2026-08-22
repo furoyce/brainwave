@@ -22,9 +22,15 @@
             <div class="top-bar-right">
                 <div class="model-selector">
                     <select id="modelSelect">
-                        <option value="gpt-realtime" selected>GPT Realtime</option>
-                        <option value="gpt-realtime-mini">GPT Realtime Mini</option>
-                        <option value="gpt-realtime-whisper">GPT Realtime Whisper</option>
+                        <optgroup label="Transcribe &amp; clean up">
+                            <option value="gpt-realtime-2.1" selected>GPT Realtime 2.1</option>
+                            <option value="gpt-realtime-2.1-mini">GPT Realtime 2.1 Mini</option>
+                            <option value="gpt-realtime-1.5">GPT Realtime 1.5</option>
+                        </optgroup>
+                        <optgroup label="Verbatim speech-to-text">
+                            <option value="gpt-live-transcribe">GPT Live Transcribe</option>
+                            <option value="gpt-realtime-whisper">GPT Realtime Whisper</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
@@ -172,6 +178,33 @@
                             </svg>
                             <span class="toolbar-label">Correctness</span>
                         </button>
+                        <button class="toolbar-btn" id="toolbarReadAloud" title="Read aloud (AI-generated voice)">
+                            <svg class="icon-play" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                            </svg>
+                            <svg class="icon-stop" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                            </svg>
+                            <span class="toolbar-label" id="readAloudLabel">Read aloud</span>
+                        </button>
+                        <select id="voiceSelect" class="toolbar-select" title="Voice (AI-generated)" aria-label="Read-aloud voice">
+                            <option value="marin" selected>Marin</option>
+                            <option value="cedar">Cedar</option>
+                            <option value="alloy">Alloy</option>
+                            <option value="ash">Ash</option>
+                            <option value="ballad">Ballad</option>
+                            <option value="coral">Coral</option>
+                            <option value="echo">Echo</option>
+                            <option value="fable">Fable</option>
+                            <option value="nova">Nova</option>
+                            <option value="onyx">Onyx</option>
+                            <option value="sage">Sage</option>
+                            <option value="shimmer">Shimmer</option>
+                            <option value="verse">Verse</option>
+                        </select>
+                        <span class="tts-badge" id="ttsBadge" hidden>AI voice</span>
                     </div>
                 </div>
                 <div class="editor-split">
