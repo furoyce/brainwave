@@ -92,15 +92,14 @@ The dropdown offers two families, and they behave differently enough that the gr
 | Group | Model | What you get |
 | --- | --- | --- |
 | Transcribe & clean up | `gpt-realtime-2.1` (default) | Speech-to-speech model held to text output. Applies `TRANSCRIPTION_PROMPT`: punctuation, casing, filler removal, paragraphing — never translation. |
-| | `gpt-realtime-2.1-mini` | Same behaviour, distilled and cheaper. Replaces the now-deprecated `gpt-realtime-mini`. |
-| | `gpt-realtime-1.5` | Non-reasoning, so it starts talking back sooner. |
-| Verbatim speech-to-text | `gpt-live-transcribe` | OpenAI's recommended realtime STT model. Verbatim — no cleanup, no filler removal. Billed per minute of audio. |
-| | `gpt-realtime-whisper` | Streaming STT with a tunable latency/accuracy `delay`. Also verbatim, also per-minute. |
+| Verbatim speech-to-text | `gpt-realtime-whisper` | Streaming STT with a tunable latency/accuracy `delay`. Verbatim — no cleanup, no filler removal. Billed per minute of audio. |
+
+Two entries, deliberately. OpenAI also offers `gpt-realtime-2.1-mini` and `gpt-realtime-1.5` in the realtime family, and `gpt-live-transcribe` (their recommended starting model) alongside `gpt-realtime-whisper` for streaming STT. All of them work; the dropdown is kept to one cleaned-up option and one verbatim option rather than exposing the full catalog. Adding one back is a line in `REALTIME_MODELS` / `TRANSCRIPTION_MODELS` in `api/index.py` plus an `<option>` in `public/index.html` — `/api/token` rejects anything not in those tuples, so both ends have to agree.
 
 The two families need different session shapes, which is why `/api/token` builds the request body rather than passing a model string straight through:
 
 - **Realtime models** run as `type: "realtime"` sessions and stream `response.output_text.delta` events.
-- **Speech-to-text models** are not valid session models at all. They run as `type: "transcription"` sessions and stream `conversation.item.input_audio_transcription.delta` / `.completed` events instead. `gpt-realtime-whisper` additionally rejects voice activity detection, so both STT models run with `turn_detection: null` and commit the audio buffer when the user stops recording.
+- **Speech-to-text models** are not valid session models at all. They run as `type: "transcription"` sessions and stream `conversation.item.input_audio_transcription.delta` / `.completed` events instead. `gpt-realtime-whisper` additionally rejects voice activity detection, so the transcription session runs with `turn_detection: null` and commits the audio buffer when the user stops recording.
 
 Because a transcription session emits no `response.done`, the frontend finalizes it when the transcription events go quiet rather than on a single terminating event.
 

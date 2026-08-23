@@ -263,8 +263,8 @@ function realtimeSessionUpdate() {
 }
 
 function transcriptionSessionUpdate(model) {
-    // gpt-realtime-whisper doesn't support VAD at all, so both speech-to-text
-    // models run with turn detection off and commit the buffer on Stop.
+    // gpt-realtime-whisper doesn't support VAD at all, so a transcription
+    // session runs with turn detection off and commits the buffer on Stop.
     return {
         type: 'session.update',
         session: {

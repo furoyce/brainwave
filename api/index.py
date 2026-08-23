@@ -54,11 +54,8 @@ INDEX_HTML = """<!DOCTYPE html>
                     <select id="modelSelect">
                         <optgroup label="Transcribe &amp; clean up">
                             <option value="gpt-realtime-2.1" selected>GPT Realtime 2.1</option>
-                            <option value="gpt-realtime-2.1-mini">GPT Realtime 2.1 Mini</option>
-                            <option value="gpt-realtime-1.5">GPT Realtime 1.5</option>
                         </optgroup>
                         <optgroup label="Verbatim speech-to-text">
-                            <option value="gpt-live-transcribe">GPT Live Transcribe</option>
                             <option value="gpt-realtime-whisper">GPT Realtime Whisper</option>
                         </optgroup>
                     </select>
@@ -333,19 +330,13 @@ Below is the text to analyze:"""
 
 # Realtime speech-to-speech models. Brainwave runs them text-out only: the model
 # hears the audio and emits a cleaned-up transcript shaped by TRANSCRIPTION_PROMPT.
-REALTIME_MODELS = (
-    "gpt-realtime-2.1",
-    "gpt-realtime-2.1-mini",
-    "gpt-realtime-1.5",
-)
+REALTIME_MODELS = ("gpt-realtime-2.1",)
 
 # Streaming speech-to-text models. These are not valid as a session model — they
 # only run inside a dedicated transcription session, where they emit verbatim
 # transcript deltas and are billed per minute of audio instead of per token.
-TRANSCRIPTION_MODELS = (
-    "gpt-live-transcribe",
-    "gpt-realtime-whisper",
-)
+# gpt-live-transcribe and gpt-transcribe also belong here if ever re-added.
+TRANSCRIPTION_MODELS = ("gpt-realtime-whisper",)
 
 DEFAULT_MODEL = "gpt-realtime-2.1"
 
@@ -369,7 +360,7 @@ def build_session_config(model: str) -> dict:
     are only accepted inside a `type: "transcription"` session, which returns
     conversation.item.input_audio_transcription.* events instead of model
     responses. `gpt-realtime-whisper` additionally requires turn detection to be
-    off, so both STT models commit turns explicitly when the user hits stop.
+    off, so the session commits its turn explicitly when the user hits stop.
     """
     if model in REALTIME_MODELS:
         return {"type": "realtime", "model": model}
