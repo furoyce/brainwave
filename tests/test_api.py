@@ -288,6 +288,19 @@ def test_chat_correctness_uses_its_own_harness(client, monkeypatch):
     client.post("/api/chat", json={"mode": "correctness", "messages": [{"role": "user", "content": "<document>x</document>"}]})
     assert "Correctness assistant" in captured["messages"][0]["content"]
 
+    client.post("/api/chat", json={"mode": "brainstorm", "messages": [{"role": "user", "content": "<document>x</document>"}]})
+    assert "Brainstorm agent" in captured["messages"][0]["content"]
+
+
+def test_brainstorm_harness_is_a_discussion_partner_not_a_rewriter():
+    prompt = index.CHAT_SYSTEMS["brainstorm"]
+    # The contract the UI depends on: opener = brief read + questions, no
+    # unprompted rewrite; curated output is clean for apply-back; same-language.
+    assert "Do not rewrite the document unprompted" in prompt
+    assert "no preamble" in prompt
+    assert "same language" in prompt
+    assert "read aloud" in prompt
+
 
 @pytest.mark.parametrize(
     "payload,detail_fragment",
