@@ -16,7 +16,7 @@
             <div class="top-bar-center">
                 <div class="mode-toggle">
                     <button id="modeTranscribe" class="mode-btn active">Transcribe</button>
-                    <button id="modeEditor" class="mode-btn">Editor</button>
+                    <button id="modeEditor" class="mode-btn">Workspace</button>
                 </div>
             </div>
             <div class="top-bar-right">
@@ -43,7 +43,7 @@
                 <textarea id="transcript" class="transcript-area" placeholder="Ready for transcription..."></textarea>
             </div>
 
-            <!-- Editor Mode -->
+            <!-- Workspace Mode -->
             <div id="editorView" class="content-card view-hidden">
                 <div class="editor-toolbar">
                     <div class="toolbar-left">
@@ -202,14 +202,57 @@
                             <option value="verse">Verse</option>
                         </select>
                         <span class="tts-badge" id="ttsBadge" hidden>AI voice</span>
+                        <button class="toolbar-btn" id="toolbarPasteClipboard" title="Paste clipboard into workspace">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+                                <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+                                <path d="M12 11v6"></path>
+                                <path d="M9 14l3 3 3-3"></path>
+                            </svg>
+                            <span class="toolbar-label">Paste in</span>
+                        </button>
                     </div>
                 </div>
                 <div class="editor-split">
-                    <textarea id="editorTextarea" class="editor-textarea" placeholder="Start typing or transcribe to add text..."></textarea>
+                    <textarea id="editorTextarea" class="editor-textarea" placeholder="Start typing, transcribe, or paste to add text..."></textarea>
                     <div class="editor-divider"></div>
                     <div id="editorPreview" class="editor-preview">
                         <p class="preview-placeholder">Preview will appear here...</p>
                     </div>
+                    <!-- Conversation panel: opens on Readability / Correctness, replaces the preview pane -->
+                    <aside id="chatPanel" class="chat-panel" hidden>
+                        <div class="chat-header">
+                            <span id="chatTitle" class="chat-title">Readability</span>
+                            <span class="tts-badge" id="chatTtsBadge" hidden>AI voice</span>
+                            <button class="toolbar-btn chat-close" id="chatClose" title="Close conversation (Esc)">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
+                        </div>
+                        <div id="chatMessages" class="chat-messages"></div>
+                        <div id="chatApplyBar" class="chat-apply-bar" hidden>
+                            <button class="chat-apply-btn" id="chatAppend" title="Append the latest reply to the workspace">Append to doc</button>
+                            <button class="chat-apply-btn" id="chatReplace" title="Replace the workspace with the latest reply">Replace doc</button>
+                            <button class="chat-apply-btn chat-undo" id="chatUndo" title="Undo the last apply" hidden>Undo</button>
+                        </div>
+                        <div class="chat-composer">
+                            <button class="toolbar-btn chat-mic" id="chatMic" title="Speak a reply">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"></path>
+                                    <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"></path>
+                                </svg>
+                            </button>
+                            <textarea id="chatInput" class="chat-input" rows="1" placeholder="Ask about the text... (Enter to send)"></textarea>
+                            <button class="toolbar-btn chat-send" id="chatSend" title="Send">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                </svg>
+                            </button>
+                        </div>
+                    </aside>
                 </div>
             </div>
         </main>

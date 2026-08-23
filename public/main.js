@@ -14,6 +14,13 @@ let isFirstResponse = true;
 let timerInterval;
 let startTime;
 let currentSessionType = 'realtime'; // 'realtime' | 'transcription'
+// Where live transcript text lands: the workspace document, or the chat
+// panel's composer when dictating a reply there.
+let dictationSink = 'workspace';     // 'workspace' | 'panel'
+// Text already in the sink when dictation began. Recording appends to it
+// instead of wiping it: typed composer text survives the panel mic, and a
+// workspace recording started from the Workspace tab extends the document.
+let dictationBaseline = '';
 
 // IndexedDB state (kept for potential future replay)
 let db = null;
@@ -93,6 +100,19 @@ const toolbarImage = document.getElementById('toolbarImage');
 const toolbarReadability = document.getElementById('toolbarReadability');
 const toolbarCorrectness = document.getElementById('toolbarCorrectness');
 const toolbarReadAloud = document.getElementById('toolbarReadAloud');
+const toolbarPasteClipboard = document.getElementById('toolbarPasteClipboard');
+const chatPanel = document.getElementById('chatPanel');
+const chatTitle = document.getElementById('chatTitle');
+const chatClose = document.getElementById('chatClose');
+const chatMessages = document.getElementById('chatMessages');
+const chatApplyBar = document.getElementById('chatApplyBar');
+const chatAppendBtn = document.getElementById('chatAppend');
+const chatReplaceBtn = document.getElementById('chatReplace');
+const chatUndoBtn = document.getElementById('chatUndo');
+const chatMic = document.getElementById('chatMic');
+const chatInput = document.getElementById('chatInput');
+const chatSend = document.getElementById('chatSend');
+const chatTtsBadge = document.getElementById('chatTtsBadge');
 const readAloudLabel = document.getElementById('readAloudLabel');
 const voiceSelect = document.getElementById('voiceSelect');
 const ttsBadge = document.getElementById('ttsBadge');
@@ -119,7 +139,7 @@ function showCopiedFeedback(button, message) {
     showCopyToast(message);
 }
 
-function showCopyToast(message) {
+function showCopyToast(message, durationMs = 1500) {
     let toast = document.querySelector('.copy-toast');
     if (!toast) {
         toast = document.createElement('div');
@@ -128,7 +148,8 @@ function showCopyToast(message) {
     }
     toast.textContent = message;
     toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 1500);
+    clearTimeout(showCopyToast._timer);
+    showCopyToast._timer = setTimeout(() => toast.classList.remove('show'), durationMs);
 }
 
 // --- Timer ---
@@ -379,6 +400,9 @@ function handleConnectionLost() {
     console.warn('WebRTC connection lost');
     clearTranscriptionTimers();
     pendingStop = false;
+    setChatMicState(false);
+    dictationSink = 'workspace';
+    dictationBaseline = '';
     isRecording = false;
     recordButton.classList.remove('recording');
     updateConnectionStatus('idle');
@@ -457,6 +481,14 @@ function handleTextDelta(data) {
 }
 
 function appendToTranscript(text) {
+    if (dictationSink === 'panel') {
+        if (chatInput) {
+            chatInput.value += text;
+            autosizeChatInput();
+        }
+        return;
+    }
+
     transcript.value += text;
     transcript.scrollTop = transcript.scrollHeight;
 
@@ -492,10 +524,21 @@ function transcriptionSegment(itemId) {
 }
 
 function renderTranscriptionSegments() {
-    const text = transcriptionSegments
+    const joined = transcriptionSegments
         .map((segment) => segment.text.trim())
         .filter(Boolean)
         .join('\n\n');
+    const text = dictationBaseline
+        ? (joined ? dictationBaseline + joined : dictationBaseline)
+        : joined;
+
+    if (dictationSink === 'panel') {
+        if (chatInput) {
+            chatInput.value = text;
+            autosizeChatInput();
+        }
+        return;
+    }
 
     transcript.value = text;
     transcript.scrollTop = transcript.scrollHeight;
@@ -570,7 +613,8 @@ function handleResponseCreated() {
     // first response (when the transcript is empty) starts fresh; subsequent
     // mid-stream responses append to the existing transcript with a newline
     // separator so segments stay readable.
-    if (transcript.value.length > 0 && !transcript.value.endsWith('\n')) {
+    const sinkValue = dictationSink === 'panel' && chatInput ? chatInput.value : transcript.value;
+    if (sinkValue.length > 0 && !sinkValue.endsWith('\n')) {
         appendToTranscript('\n');
     }
 }
@@ -594,6 +638,19 @@ function finishRecordingSession() {
     const durationSeconds = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
     stopTimer();
     updateConnectionStatus('idle');
+
+    if (dictationSink === 'panel') {
+        // Panel dictation: the text is a chat reply sitting in the composer.
+        // No clipboard copy, no DB save, no doc sync.
+        setChatMicState(false);
+        dictationSink = 'workspace';
+        dictationBaseline = '';
+        if (chatInput) chatInput.focus();
+        disconnectWebRTC();
+        pendingStop = false;
+        return;
+    }
+
     copyToClipboard(transcript.value, copyButton);
 
     // Sync transcript to editor
@@ -607,8 +664,10 @@ function finishRecordingSession() {
         saveTranscript(transcript.value, durationSeconds);
     }
 
+    dictationBaseline = '';
     disconnectWebRTC();
     pendingStop = false;
+    syncRecorderAffordances();
 }
 
 async function saveTranscript(text, durationSeconds) {
@@ -637,6 +696,9 @@ function handleError(data) {
     alert('OpenAI error: ' + msg);
     clearTranscriptionTimers();
     pendingStop = false;
+    setChatMicState(false);
+    dictationSink = 'workspace';
+    dictationBaseline = '';
     stopTimer();
     updateConnectionStatus('idle');
     isRecording = false;
@@ -648,35 +710,70 @@ function handleError(data) {
 // Recording control
 // ============================================================
 
-async function startRecording() {
+async function startRecording(sink = 'workspace') {
     if (isRecording) return;
 
     // The mic would pick up the read-aloud voice and transcribe it back.
     if (ttsPlaying) stopReadAloud();
+    if (chatTtsPlaying) stopChatReadAloud();
+
+    dictationSink = sink;
 
     try {
-        transcript.value = '';
-        enhancedTranscript.value = '';
+        if (sink === 'workspace') {
+            enhancedTranscript.value = '';
+            if (currentMode === 'editor' && transcript.value.trim()) {
+                // Recording from the Workspace tab extends the document the
+                // user has built up (typed, pasted, applied) instead of
+                // wiping it. Transcribe mode keeps its fresh-start behaviour.
+                dictationBaseline = transcript.value.replace(/\s+$/, '') + '\n\n';
+                transcript.value = dictationBaseline;
+            } else {
+                dictationBaseline = '';
+                transcript.value = '';
+            }
+        } else {
+            // Panel dictation appends to whatever was already typed there.
+            const typed = chatInput ? chatInput.value : '';
+            dictationBaseline = typed.trim() ? typed.replace(/\s+$/, '') + ' ' : '';
+            if (chatInput) {
+                chatInput.value = dictationBaseline;
+                autosizeChatInput();
+            }
+        }
         isFirstResponse = true;
         pendingStop = false;
         clearTranscriptionTimers();
         resetTranscriptionSegments();
 
+        // The panel mic always uses the cleaned-up realtime model: a chat turn
+        // wants fillers stripped, and the dropdown reads as a Transcribe-mode
+        // setting — whisper's verbatim output doesn't belong in a reply.
         const modelSelect = document.getElementById('modelSelect');
-        const selectedModel = modelSelect ? modelSelect.value : DEFAULT_MODEL;
+        const selectedModel = sink === 'panel'
+            ? DEFAULT_MODEL
+            : (modelSelect ? modelSelect.value : DEFAULT_MODEL);
 
         updateConnectionStatus('connecting');
         await connectToOpenAI(selectedModel);
 
         isRecording = true;
         startTimer();
-        recordButton.classList.add('recording');
+        if (sink === 'panel') {
+            setChatMicState(true);
+        } else {
+            recordButton.classList.add('recording');
+            syncRecorderAffordances();
+        }
         updateConnectionStatus('recording');
         if (replayButton) replayButton.disabled = true;
     } catch (error) {
         console.error('Error starting recording:', error);
         alert('Error: ' + error.message);
         updateConnectionStatus('idle');
+        setChatMicState(false);
+        dictationSink = 'workspace';
+        dictationBaseline = '';
         disconnectWebRTC();
     }
 }
@@ -687,6 +784,10 @@ async function stopRecording() {
     pendingStop = true;
 
     recordButton.classList.remove('recording');
+    // Panel-mic pulse stops now; the sink itself resets in finishRecordingSession
+    // after the final transcript lands in the composer.
+    if (dictationSink === 'panel') setChatMicState(false);
+    else syncRecorderAffordances();
 
     if (dc && dc.readyState === 'open') {
         // Commit any remaining audio to close out the final turn
@@ -994,6 +1095,7 @@ async function startReadAloud(inputText) {
     if (!chunks.length) return;
 
     if (ttsPlaying) stopReadAloud();
+    if (chatTtsPlaying) stopChatReadAloud();  // one voice at a time
 
     const voice = selectedVoice();
     const controller = new AbortController();
@@ -1051,9 +1153,10 @@ if (correctnessButton) correctnessButton.onclick = () => runCorrectness(transcri
 function switchMode(mode) {
     currentMode = mode;
 
-    // Read aloud lives in the editor; don't leave a voice running behind a
-    // view the user has navigated away from.
+    // Read aloud and the conversation panel live in the workspace; don't leave
+    // either running behind a view the user has navigated away from.
     if (mode !== 'editor' && ttsPlaying) stopReadAloud();
+    if (mode !== 'editor' && chatPanelOpen()) closeChatPanel();
 
     if (mode === 'transcribe') {
         modeTranscribe.classList.add('active');
@@ -1300,6 +1403,11 @@ function insertImageTemplate() {
 
 function clearAll() {
     stopReadAloud();
+    // A conversation about a document the user just deleted is stale, and its
+    // Undo slot would resurrect text into a deliberately emptied workspace.
+    if (chatPanelOpen()) closeChatPanel();
+    chatUndoSnapshot = null;
+    if (chatUndoBtn) chatUndoBtn.hidden = true;
     transcript.value = '';
     enhancedTranscript.value = '';
     if (editorTextarea) editorTextarea.value = '';
@@ -1330,8 +1438,17 @@ function initializeTheme() {
 // Event listeners & initialization
 // ============================================================
 
-// Record button
-recordButton.onclick = () => isRecording ? stopRecording() : startRecording();
+// Record button — owns the workspace sink only. While a panel dictation is
+// live it must not silently terminate it; the affordance sync below disables
+// it instead, and this guard covers keyboard activation.
+recordButton.onclick = () => {
+    if (isRecording) {
+        if (dictationSink === 'workspace') stopRecording();
+        else showCopyToast('Finish the spoken reply first');
+        return;
+    }
+    startRecording();
+};
 
 // Replay button (disabled in WebRTC mode)
 if (replayButton) {
@@ -1401,15 +1518,395 @@ if (toolbarCodeBlock) toolbarCodeBlock.onclick = () => {
 if (toolbarLink) toolbarLink.onclick = () => insertLinkTemplate();
 if (toolbarImage) toolbarImage.onclick = () => insertImageTemplate();
 
-// Readability / Correctness from editor toolbar
-if (toolbarReadability) toolbarReadability.onclick = () => {
-    const text = editorTextarea ? editorTextarea.value : transcript.value;
-    runReadability(text);
+// Readability / Correctness open the conversation panel on the current doc
+if (toolbarReadability) toolbarReadability.onclick = () => openChatPanel('readability');
+if (toolbarCorrectness) toolbarCorrectness.onclick = () => openChatPanel('correctness');
+
+// ============================================================
+// Workspace conversation panel (Readability / Correctness chat)
+// ============================================================
+
+const CHAT_MODES = {
+    readability: { title: 'Readability', seedNote: 'Simplifying your text…' },
+    correctness: { title: 'Correctness', seedNote: 'Checking your text…' },
 };
-if (toolbarCorrectness) toolbarCorrectness.onclick = () => {
-    const text = editorTextarea ? editorTextarea.value : transcript.value;
-    runCorrectness(text);
+
+let chatMode = null;          // 'readability' | 'correctness' | null
+let chatHistory = [];         // [{role, content}] sent to /api/chat verbatim
+let chatStreaming = false;
+let chatUndoSnapshot = null;  // doc text before the last apply
+let chatTtsPlaying = false;
+let chatTtsController = null;
+let chatTtsAudio = null;
+
+function chatPanelOpen() {
+    return chatPanel && !chatPanel.hidden;
+}
+
+function autosizeChatInput() {
+    if (!chatInput) return;
+    chatInput.style.height = 'auto';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+}
+
+function setChatMicState(recording) {
+    if (chatMic) chatMic.classList.toggle('recording', recording);
+    syncRecorderAffordances();
+}
+
+// While one mic records, the other is disabled — each owns only its own sink.
+function syncRecorderAffordances() {
+    if (chatMic) chatMic.disabled = isRecording && dictationSink !== 'panel';
+    if (recordButton) recordButton.disabled = isRecording && dictationSink === 'panel';
+}
+
+function workspaceText() {
+    return editorTextarea ? editorTextarea.value : transcript.value;
+}
+
+function setWorkspaceText(text) {
+    if (editorTextarea) editorTextarea.value = text;
+    transcript.value = text;
+    updateEditorPreview();
+}
+
+// --- message rendering ---
+
+function addChatBubble(role, text) {
+    const el = document.createElement('div');
+    el.className = 'chat-msg ' + role;
+    if (role === 'assistant') {
+        el.innerHTML = renderMarkdown(text);
+    } else {
+        el.textContent = text;
+    }
+    chatMessages.appendChild(el);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return el;
+}
+
+function attachAssistantActions(bubble, getText) {
+    const actions = document.createElement('div');
+    actions.className = 'chat-msg-actions';
+
+    const mkBtn = (title, svg, onclick) => {
+        const b = document.createElement('button');
+        b.className = 'toolbar-btn';
+        b.title = title;
+        b.innerHTML = svg;
+        b.onclick = onclick;
+        actions.appendChild(b);
+        return b;
+    };
+
+    mkBtn('Read this reply aloud (AI-generated voice)',
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>',
+        () => toggleChatReadAloud(getText()));
+    mkBtn('Append this reply to the workspace',
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
+        () => applyTextToWorkspace(getText(), 'append'));
+    mkBtn('Replace the workspace with this reply',
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>',
+        () => applyTextToWorkspace(getText(), 'replace'));
+
+    bubble.appendChild(actions);
+}
+
+// --- panel read-aloud: same chunked TTS pipeline, separate stop state so the
+// toolbar read-aloud and the panel don't fight over one flag ---
+
+function stopChatReadAloud() {
+    chatTtsPlaying = false;
+    if (chatTtsBadge) chatTtsBadge.hidden = true;
+    if (chatTtsController) { chatTtsController.abort(); chatTtsController = null; }
+    if (chatTtsAudio) { chatTtsAudio.pause(); chatTtsAudio = null; }
+}
+
+async function toggleChatReadAloud(text) {
+    if (chatTtsPlaying) { stopChatReadAloud(); return; }
+    const plain = stripMarkdownForSpeech(text || '');
+    if (!plain) return;
+    if (ttsPlaying) stopReadAloud();  // don't talk over the toolbar reader
+
+    const chunks = chunkTextForSpeech(plain);
+    const voice = selectedVoice();
+    const controller = new AbortController();
+    chatTtsController = controller;
+    chatTtsPlaying = true;
+    if (chatTtsBadge) chatTtsBadge.hidden = false;
+
+    try {
+        let pending = fetchSpeech(chunks[0], voice, controller.signal);
+        for (let i = 0; i < chunks.length; i++) {
+            const current = pending;
+            pending = i + 1 < chunks.length ? fetchSpeech(chunks[i + 1], voice, controller.signal) : null;
+            if (pending) pending.catch(() => {});
+            const blob = await current;
+            if (!chatTtsPlaying || controller.signal.aborted) break;
+            await new Promise((resolve, reject) => {
+                const url = URL.createObjectURL(blob);
+                const audio = new Audio(url);
+                chatTtsAudio = audio;
+                let settled = false;
+                const finish = (err) => {
+                    if (settled) return;
+                    settled = true;
+                    URL.revokeObjectURL(url);
+                    if (chatTtsAudio === audio) chatTtsAudio = null;
+                    if (err) reject(err); else resolve();
+                };
+                audio.onended = () => finish(null);
+                audio.onpause = () => finish(null);
+                audio.onerror = () => finish(new Error('Audio playback failed'));
+                audio.play().catch((err) => finish(err));
+            });
+            if (!chatTtsPlaying || controller.signal.aborted) break;
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error('Panel read aloud failed:', err);
+    } finally {
+        if (chatTtsController === controller) stopChatReadAloud();
+    }
+}
+
+// --- conversation flow ---
+
+async function streamChatReply() {
+    chatStreaming = true;
+    if (chatSend) chatSend.disabled = true;
+    const bubble = addChatBubble('assistant', '');
+    bubble.classList.add('pending');
+
+    let fullText = '';
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: chatMode, messages: chatHistory }),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `Chat failed (${response.status})`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += decoder.decode(value, { stream: true });
+            bubble.innerHTML = renderMarkdown(fullText);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        chatHistory.push({ role: 'assistant', content: fullText });
+        attachAssistantActions(bubble, () => fullText);
+        if (chatApplyBar) chatApplyBar.hidden = false;
+    } catch (err) {
+        console.error('Chat error:', err);
+        bubble.textContent = 'Error: ' + err.message;
+        // Drop the failed user turn so a retry doesn't double it? No — keep it,
+        // the user can just send again; the server sees the same history.
+    } finally {
+        bubble.classList.remove('pending');
+        chatStreaming = false;
+        if (chatSend) chatSend.disabled = false;
+    }
+}
+
+function openChatPanel(mode) {
+    const doc = workspaceText().trim();
+    if (!doc) {
+        alert('Add some text to the workspace first.');
+        return;
+    }
+    if (currentMode !== 'editor') switchMode('editor');
+
+    // Reset conversation state for a fresh session on the current document.
+    chatMode = mode;
+    chatHistory = [];
+    chatUndoSnapshot = null;
+    stopChatReadAloud();
+    chatMessages.innerHTML = '';
+    if (chatApplyBar) chatApplyBar.hidden = true;
+    if (chatUndoBtn) chatUndoBtn.hidden = true;
+    if (chatInput) { chatInput.value = ''; autosizeChatInput(); }
+
+    chatTitle.textContent = CHAT_MODES[mode].title;
+    chatPanel.hidden = false;
+    document.querySelector('.editor-split').classList.add('chat-open');
+
+    // Turn 1: the document itself, wrapped so the harness can tell it apart
+    // from conversational turns. Shown in the panel as a short note, not the
+    // full doc (it's already visible in the textarea next door).
+    addChatBubble('user', CHAT_MODES[mode].seedNote);
+    chatHistory.push({ role: 'user', content: '<document>\n' + doc + '\n</document>' });
+    streamChatReply();
+}
+
+function closeChatPanel() {
+    if (isRecording && dictationSink === 'panel') stopRecording();
+    stopChatReadAloud();
+    chatPanel.hidden = true;
+    const split = document.querySelector('.editor-split');
+    if (split) split.classList.remove('chat-open');
+    chatMode = null;
+}
+
+function sendChatMessage() {
+    if (chatStreaming) return;
+    const text = chatInput ? chatInput.value.trim() : '';
+    if (!text) return;
+    chatInput.value = '';
+    autosizeChatInput();
+    addChatBubble('user', text);
+    chatHistory.push({ role: 'user', content: text });
+    streamChatReply();
+}
+
+// --- apply back to the workspace ---
+
+function lastAssistantText() {
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+        if (chatHistory[i].role === 'assistant') return chatHistory[i].content;
+    }
+    return '';
+}
+
+function applyTextToWorkspace(text, mode) {
+    text = (text || '').trim();
+    if (!text) return;
+    chatUndoSnapshot = workspaceText();
+    if (mode === 'replace') {
+        setWorkspaceText(text);
+    } else {
+        const existing = workspaceText().replace(/\s+$/, '');
+        setWorkspaceText(existing ? existing + '\n\n' + text : text);
+    }
+    if (chatUndoBtn) chatUndoBtn.hidden = false;
+    showCopyToast(mode === 'replace' ? 'Workspace replaced' : 'Appended to workspace');
+}
+
+function applyToWorkspace(mode) {
+    applyTextToWorkspace(lastAssistantText(), mode);
+}
+
+function undoApply() {
+    if (chatUndoSnapshot === null) return;
+    setWorkspaceText(chatUndoSnapshot);
+    chatUndoSnapshot = null;
+    if (chatUndoBtn) chatUndoBtn.hidden = true;
+    showCopyToast('Workspace restored');
+}
+
+// --- wiring ---
+
+if (chatClose) chatClose.onclick = closeChatPanel;
+if (chatSend) chatSend.onclick = sendChatMessage;
+if (chatAppendBtn) chatAppendBtn.onclick = () => applyToWorkspace('append');
+if (chatReplaceBtn) chatReplaceBtn.onclick = () => applyToWorkspace('replace');
+if (chatUndoBtn) chatUndoBtn.onclick = undoApply;
+
+if (chatMic) chatMic.onclick = () => {
+    if (isRecording) {
+        // Only stop a recording this mic owns; a document recording in
+        // flight is not the panel's to end.
+        if (dictationSink === 'panel') stopRecording();
+        else showCopyToast('Stop the document recording first');
+        return;
+    }
+    startRecording('panel');
 };
+
+if (chatInput) {
+    chatInput.addEventListener('input', autosizeChatInput);
+    chatInput.addEventListener('keydown', (event) => {
+        // isComposing: an IME candidate confirmation also fires Enter — the
+        // harnesses preserve mixed-language input, so CJK typing must work.
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+            event.preventDefault();
+            sendChatMessage();
+        }
+    });
+}
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && chatPanelOpen()) closeChatPanel();
+});
+
+// ============================================================
+// Paste clipboard into workspace (one click)
+// ============================================================
+
+// Appends rather than replaces so multiple copies from other apps accumulate;
+// a blank line keeps each paste a separate paragraph.
+function appendPastedText(text) {
+    if (!text || !text.trim()) {
+        showCopyToast('Nothing text-like on the clipboard');
+        return;
+    }
+    const cleaned = text.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+
+    // Pasting mid-recording on the whisper path: the next transcription render
+    // rebuilds the textarea from segments, so text merely assigned to .value
+    // would vanish. Registering it as its own segment keeps it in the doc.
+    if (isRecording && dictationSink === 'workspace' && currentSessionType === 'transcription') {
+        transcriptionSegment('paste-' + Date.now()).text = cleaned;
+        renderTranscriptionSegments();
+        showCopyToast('Pasted from clipboard');
+        return;
+    }
+
+    const target = editorTextarea || transcript;
+    const existing = target.value.replace(/\s+$/, '');
+    const insertion = existing ? '\n\n' + cleaned : cleaned;
+
+    // execCommand('insertText') preserves the textarea's native undo stack;
+    // fall back to a plain value write where it's unavailable or refuses.
+    let inserted = false;
+    if (typeof document.execCommand === 'function') {
+        target.focus();
+        target.selectionStart = target.selectionEnd = target.value.length;
+        try {
+            inserted = document.execCommand('insertText', false, insertion);
+        } catch {
+            inserted = false;
+        }
+    }
+    if (!inserted) {
+        target.value = existing ? existing + '\n\n' + cleaned : cleaned;
+    }
+
+    // Keep the transcript/workspace mirror in sync, same as typing does.
+    transcript.value = target.value;
+    updateEditorPreview();
+    target.scrollTop = target.scrollHeight;
+    showCopyToast('Pasted from clipboard');
+}
+
+async function pasteFromClipboard() {
+    // navigator.clipboard.readText needs a secure context. Chromium gates it on
+    // the clipboard-read permission; Firefox (125+) and Safari satisfy it with
+    // an ephemeral "Paste" confirmation instead, so there it's two clicks, not
+    // one. Called synchronously from the click handler so transient activation
+    // holds — never add an await ahead of this call.
+    if (navigator.clipboard && navigator.clipboard.readText) {
+        try {
+            appendPastedText(await navigator.clipboard.readText());
+            return;
+        } catch (err) {
+            console.warn('Clipboard read failed:', err);
+        }
+    }
+    // No API or permission denied: fall back to asking for a manual paste,
+    // which the browser always allows.
+    showCopyToast('Clipboard access blocked \u2014 press ' + (/Mac|iPhone|iPad/.test(navigator.userAgent) ? '\u2318V' : 'Ctrl+V') + ' to paste', 4000);
+    if (editorTextarea) {
+        editorTextarea.focus();
+        const end = editorTextarea.value.length;
+        editorTextarea.selectionStart = editorTextarea.selectionEnd = end;
+    }
+}
+
+if (toolbarPasteClipboard) toolbarPasteClipboard.onclick = pasteFromClipboard;
 
 // Read aloud from the editor toolbar
 if (toolbarReadAloud) toolbarReadAloud.onclick = toggleReadAloud;
@@ -1425,13 +1922,20 @@ if (editorTextarea) {
 
 // Spacebar toggle
 document.addEventListener('keydown', (event) => {
-    if (event.code === 'Space') {
-        const active = document.activeElement;
-        if (!active.tagName.match(/INPUT|TEXTAREA/) && !active.isContentEditable) {
-            event.preventDefault();
-            recordButton.click();
-        }
-    }
+    if (event.code !== 'Space') return;
+    // Suppressed while the conversation panel is open — focus moves between
+    // its buttons and space would otherwise trigger a surprise recording.
+    if (chatPanelOpen()) return;
+    const active = document.activeElement;
+    // Space must stay Space inside anything interactive: text fields, but also
+    // SELECT (opens the dropdown) and BUTTON (activates it) — focusing the
+    // voice picker and pressing Space used to start a recording.
+    if (active && (
+        /INPUT|TEXTAREA|SELECT|BUTTON/.test(active.tagName || '') ||
+        active.isContentEditable
+    )) return;
+    event.preventDefault();
+    recordButton.click();
 });
 
 // Theme toggle (hidden but functional)
