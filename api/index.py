@@ -46,7 +46,7 @@ INDEX_HTML = """<!DOCTYPE html>
             <div class="top-bar-center">
                 <div class="mode-toggle">
                     <button id="modeTranscribe" class="mode-btn active">Transcribe</button>
-                    <button id="modeEditor" class="mode-btn">Editor</button>
+                    <button id="modeEditor" class="mode-btn">Workspace</button>
                 </div>
             </div>
             <div class="top-bar-right">
@@ -73,7 +73,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 <textarea id="transcript" class="transcript-area" placeholder="Ready for transcription..."></textarea>
             </div>
 
-            <!-- Editor Mode -->
+            <!-- Workspace Mode -->
             <div id="editorView" class="content-card view-hidden">
                 <div class="editor-toolbar">
                     <div class="toolbar-left">
@@ -232,10 +232,19 @@ INDEX_HTML = """<!DOCTYPE html>
                             <option value="verse">Verse</option>
                         </select>
                         <span class="tts-badge" id="ttsBadge" hidden>AI voice</span>
+                        <button class="toolbar-btn" id="toolbarPasteClipboard" title="Paste clipboard into workspace">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+                                <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+                                <path d="M12 11v6"></path>
+                                <path d="M9 14l3 3 3-3"></path>
+                            </svg>
+                            <span class="toolbar-label">Paste in</span>
+                        </button>
                     </div>
                 </div>
                 <div class="editor-split">
-                    <textarea id="editorTextarea" class="editor-textarea" placeholder="Start typing or transcribe to add text..."></textarea>
+                    <textarea id="editorTextarea" class="editor-textarea" placeholder="Start typing, transcribe, or paste to add text..."></textarea>
                     <div class="editor-divider"></div>
                     <div id="editorPreview" class="editor-preview">
                         <p class="preview-placeholder">Preview will appear here...</p>

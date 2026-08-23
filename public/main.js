@@ -93,6 +93,7 @@ const toolbarImage = document.getElementById('toolbarImage');
 const toolbarReadability = document.getElementById('toolbarReadability');
 const toolbarCorrectness = document.getElementById('toolbarCorrectness');
 const toolbarReadAloud = document.getElementById('toolbarReadAloud');
+const toolbarPasteClipboard = document.getElementById('toolbarPasteClipboard');
 const readAloudLabel = document.getElementById('readAloudLabel');
 const voiceSelect = document.getElementById('voiceSelect');
 const ttsBadge = document.getElementById('ttsBadge');
@@ -1410,6 +1411,54 @@ if (toolbarCorrectness) toolbarCorrectness.onclick = () => {
     const text = editorTextarea ? editorTextarea.value : transcript.value;
     runCorrectness(text);
 };
+
+// ============================================================
+// Paste clipboard into workspace (one click)
+// ============================================================
+
+// Appends rather than replaces so multiple copies from other apps accumulate;
+// a blank line keeps each paste a separate paragraph.
+function appendPastedText(text) {
+    if (!text || !text.trim()) {
+        showCopyToast('Clipboard is empty');
+        return;
+    }
+    const cleaned = text.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+    const target = editorTextarea || transcript;
+    const existing = target.value.replace(/\s+$/, '');
+    target.value = existing ? existing + '\n\n' + cleaned : cleaned;
+
+    // Keep the transcript/workspace mirror in sync, same as typing does.
+    transcript.value = target.value;
+    updateEditorPreview();
+    target.scrollTop = target.scrollHeight;
+    showCopyToast('Pasted from clipboard');
+}
+
+async function pasteFromClipboard() {
+    // navigator.clipboard.readText needs a secure context and (in Chromium) the
+    // clipboard-read permission; Firefox doesn't expose it to pages at all, and
+    // Safari requires it be called during the click. Called directly from the
+    // click handler, so the transient-activation requirement is satisfied.
+    if (navigator.clipboard && navigator.clipboard.readText) {
+        try {
+            appendPastedText(await navigator.clipboard.readText());
+            return;
+        } catch (err) {
+            console.warn('Clipboard read failed:', err);
+        }
+    }
+    // No API or permission denied: fall back to asking for a manual paste,
+    // which the browser always allows.
+    showCopyToast('Press ' + (/Mac|iPhone|iPad/.test(navigator.userAgent) ? '\u2318V' : 'Ctrl+V') + ' to paste');
+    if (editorTextarea) {
+        editorTextarea.focus();
+        const end = editorTextarea.value.length;
+        editorTextarea.selectionStart = editorTextarea.selectionEnd = end;
+    }
+}
+
+if (toolbarPasteClipboard) toolbarPasteClipboard.onclick = pasteFromClipboard;
 
 // Read aloud from the editor toolbar
 if (toolbarReadAloud) toolbarReadAloud.onclick = toggleReadAloud;
