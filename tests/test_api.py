@@ -68,6 +68,16 @@ def test_deprecated_realtime_mini_is_not_offered():
     assert "gpt-realtime-mini" not in index.TRANSCRIPTION_MODELS
 
 
+def test_catalog_is_one_cleaned_up_model_and_one_verbatim_model():
+    assert index.REALTIME_MODELS == ("gpt-realtime-2.1",)
+    assert index.TRANSCRIPTION_MODELS == ("gpt-realtime-whisper",)
+
+
+def test_read_aloud_still_uses_the_only_speech_generation_model():
+    # gpt-4o-mini-tts is not a dropdown entry — it backs /api/speech.
+    assert index.SPEECH_MODEL == "gpt-4o-mini-tts"
+
+
 def test_default_model_is_a_realtime_model():
     assert index.DEFAULT_MODEL in index.REALTIME_MODELS
 
@@ -91,7 +101,20 @@ def test_transcription_models_get_a_transcription_session(model):
     assert config["audio"]["input"]["turn_detection"] is None
 
 
-@pytest.mark.parametrize("model", ["gpt-realtime-mini", "gpt-4o", "", "not-a-model"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-realtime-mini",   # deprecated upstream
+        # Real, working models deliberately not offered — the dropdown is kept to
+        # one cleaned-up option and one verbatim one.
+        "gpt-realtime-2.1-mini",
+        "gpt-realtime-1.5",
+        "gpt-live-transcribe",
+        "gpt-4o",
+        "",
+        "not-a-model",
+    ],
+)
 def test_unknown_models_are_rejected(model):
     with pytest.raises(index.HTTPException) as exc:
         index.build_session_config(model)
