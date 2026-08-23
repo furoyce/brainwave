@@ -217,7 +217,63 @@ function buildPanel(overrides = {}) {
       JSON.stringify(log[1] && log[1].mode));
   }
 
+  // ---------------------------------------------- toolbar routing (Brainstorm era)
+  {
+    const chatCalls = [];
+    const restCalls = [];
+    const fetchStub = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/api/chat')) { chatCalls.push(u); return chatFetch(['x'])(url, opts); }
+      restCalls.push(u);
+      const enc = new TextEncoder();
+      let sent = false;
+      return {
+        ok: true,
+        body: { getReader: () => ({ read: async () => sent ? { done: true } : (sent = true, { done: false, value: enc.encode('Rewritten.') }) }) },
+      };
+    };
+    const h = buildPanel({ fetch: fetchStub, TextEncoder });
+    const { x, doc, state } = h;
+    doc.getElementById('editorTextarea').value = 'Original doc text.';
+    doc.getElementById('transcript').value = 'Original doc text.';
+
+    check('brainstorm is a registered chat mode with its own title',
+      x.CHAT_MODES.brainstorm && x.CHAT_MODES.brainstorm.title === 'Brainstorm',
+      JSON.stringify(x.CHAT_MODES.brainstorm));
+
+    // Brainstorm opens the pane
+    x.openChatPanel('brainstorm');
+    await sleep(20);
+    check('brainstorm opens the docked pane', x.chatPanelOpen() && state().chatMode === 'brainstorm');
+    check('brainstorm seeds the document turn to /api/chat', chatCalls.length === 1, String(chatCalls.length));
+    check('pane title says Brainstorm', doc.getElementById('chatTitle').textContent === 'Brainstorm');
+    x.closeChatPanel();
+
+    // Readability toolbar handler is a one-shot doc transform again
+    const before = chatCalls.length;
+    doc.getElementById('toolbarReadability').onclick();
+    await sleep(20);
+    check('readability hits /api/readability, not the chat pane',
+      restCalls.some((u) => u.includes('/api/readability')) && chatCalls.length === before && !x.chatPanelOpen(),
+      JSON.stringify(restCalls));
+    check('readability rewrite lands in the workspace and stays synced across tabs',
+      x.workspaceText() === 'Rewritten.' && doc.getElementById('transcript').value === 'Rewritten.',
+      JSON.stringify(x.workspaceText()));
+
+    // Correctness reviews without touching the doc
+    doc.getElementById('editorTextarea').value = 'Doc for review.';
+    doc.getElementById('transcript').value = 'Doc for review.';
+    doc.getElementById('toolbarCorrectness').onclick();
+    await sleep(20);
+    check('correctness hits /api/correctness and leaves the doc alone',
+      restCalls.some((u) => u.includes('/api/correctness')) && x.workspaceText() === 'Doc for review.' && !x.chatPanelOpen());
+  }
+
   console.log('');
   console.log('FAILURES:', fails.length ? fails : 'none');
   process.exit(fails.length ? 1 : 0);
 })();
+
+// NOTE: the suites above exercise the panel machinery through
+// openChatPanel('readability'|'correctness') directly — those modes stay valid
+// server-side. The toolbar routing changed: Brainstorm owns the panel now.

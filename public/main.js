@@ -99,6 +99,7 @@ const toolbarLink = document.getElementById('toolbarLink');
 const toolbarImage = document.getElementById('toolbarImage');
 const toolbarReadability = document.getElementById('toolbarReadability');
 const toolbarCorrectness = document.getElementById('toolbarCorrectness');
+const toolbarBrainstorm = document.getElementById('toolbarBrainstorm');
 const toolbarReadAloud = document.getElementById('toolbarReadAloud');
 const toolbarPasteClipboard = document.getElementById('toolbarPasteClipboard');
 const chatPanel = document.getElementById('chatPanel');
@@ -843,6 +844,10 @@ async function runReadability(inputText) {
                 updateEditorPreview();
             }
         }
+        // Commit through the workspace helper so transcript stays in sync —
+        // otherwise switching tabs copies the stale transcript back over the
+        // rewrite and silently loses it.
+        setWorkspaceText(fullText);
         if (!isMobileDevice()) copyToClipboard(fullText, copyEnhancedButton);
         stopTimer();
     } catch (error) {
@@ -1518,20 +1523,24 @@ if (toolbarCodeBlock) toolbarCodeBlock.onclick = () => {
 if (toolbarLink) toolbarLink.onclick = () => insertLinkTemplate();
 if (toolbarImage) toolbarImage.onclick = () => insertImageTemplate();
 
-// Readability / Correctness open the conversation panel on the current doc
-if (toolbarReadability) toolbarReadability.onclick = () => openChatPanel('readability');
-if (toolbarCorrectness) toolbarCorrectness.onclick = () => openChatPanel('correctness');
+// Readability / Correctness are one-shot document actions: Readability
+// rewrites the doc in place, Correctness renders its review in the preview.
+// Brainstorm is the conversational agent — it opens the docked pane.
+if (toolbarReadability) toolbarReadability.onclick = () => runReadability(workspaceText());
+if (toolbarCorrectness) toolbarCorrectness.onclick = () => runCorrectness(workspaceText());
+if (toolbarBrainstorm) toolbarBrainstorm.onclick = () => openChatPanel('brainstorm');
 
 // ============================================================
-// Workspace conversation panel (Readability / Correctness chat)
+// Brainstorm pane (conversational agent over the current document)
 // ============================================================
 
 const CHAT_MODES = {
+    brainstorm: { title: 'Brainstorm', seedNote: 'Reading your doc…' },
     readability: { title: 'Readability', seedNote: 'Simplifying your text…' },
     correctness: { title: 'Correctness', seedNote: 'Checking your text…' },
 };
 
-let chatMode = null;          // 'readability' | 'correctness' | null
+let chatMode = null;          // key into CHAT_MODES, or null when closed
 let chatHistory = [];         // [{role, content}] sent to /api/chat verbatim
 let chatStreaming = false;
 let chatUndoSnapshot = null;  // doc text before the last apply
@@ -1546,7 +1555,7 @@ function chatPanelOpen() {
 function autosizeChatInput() {
     if (!chatInput) return;
     chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 180) + 'px';
 }
 
 function setChatMicState(recording) {

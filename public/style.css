@@ -398,19 +398,31 @@ body {
    Workspace conversation panel
    ============================================================ */
 
-/* While a conversation is open the panel takes the preview pane's slot,
-   keeping the document textarea visible alongside it. */
-.editor-split.chat-open .editor-preview {
-    display: none;
-}
-
+/* The Brainstorm pane docks as a third column: the document and its preview
+   compress to the left and the conversation gets a solid, fixed-ish width of
+   its own instead of floating over the preview. */
 .chat-panel {
-    flex: 1;
+    flex: 0 0 clamp(340px, 36%, 560px);
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     border-left: 1px solid var(--border-light);
+}
+
+.editor-split.chat-open .editor-textarea,
+.editor-split.chat-open .editor-preview {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* Three readable panes need real width; below that, the preview yields to the
+   conversation and comes back when the pane closes. */
+@media (max-width: 1100px) {
+    .editor-split.chat-open .editor-preview,
+    .editor-split.chat-open .editor-divider {
+        display: none;
+    }
 }
 
 .chat-panel[hidden] {
@@ -439,11 +451,25 @@ body {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 12px;
     display: flex;
     flex-direction: column;
     gap: 10px;
     min-height: 0;
+}
+
+/* Wide content (code blocks, tables) scrolls inside its bubble — the pane
+   itself must never grow a horizontal scrollbar. */
+.chat-msg pre {
+    overflow-x: auto;
+    max-width: 100%;
+}
+
+.chat-msg table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
 }
 
 .chat-msg {
@@ -537,7 +563,7 @@ body {
     flex: 1;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 7px 10px;
+    padding: 9px 12px;
     font-family: var(--font);
     font-size: 0.9rem;
     line-height: 1.5;
@@ -545,7 +571,9 @@ body {
     background: var(--card-bg);
     resize: none;
     outline: none;
-    max-height: 120px;
+    min-height: 58px;
+    max-height: 180px;
+    overflow-y: auto;
     transition: border-color var(--transition);
 }
 
@@ -921,8 +949,15 @@ body {
     }
 
     .chat-panel {
+        flex: 1 1 auto;
         border-left: none;
         border-top: 1px solid var(--border-light);
+    }
+
+    /* Stacked layout has no room for three panes. */
+    .editor-split.chat-open .editor-preview,
+    .editor-split.chat-open .editor-divider {
+        display: none;
     }
 
     /* With the panel open, the stacked min-heights would push the composer

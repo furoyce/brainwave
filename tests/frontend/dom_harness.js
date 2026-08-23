@@ -72,7 +72,7 @@ function build(overrides = {}) {
     'clearTranscriptionTimers', 'initializeVoicePreference',
     'TRANSCRIPTION_QUIET_MS', 'TRANSCRIPTION_MAX_WAIT_MS',
     'appendPastedText', 'pasteFromClipboard',
-    'openChatPanel', 'closeChatPanel', 'sendChatMessage', 'applyToWorkspace',
+    'openChatPanel', 'closeChatPanel', 'sendChatMessage', 'applyToWorkspace', 'CHAT_MODES',
     'applyTextToWorkspace', 'undoApply', 'lastAssistantText', 'chatPanelOpen',
     'setWorkspaceText', 'workspaceText', 'stopChatReadAloud', 'setChatMicState',
     'switchMode'];
