@@ -667,6 +667,7 @@ function finishRecordingSession() {
     dictationBaseline = '';
     disconnectWebRTC();
     pendingStop = false;
+    syncRecorderAffordances();
 }
 
 async function saveTranscript(text, durationSeconds) {
@@ -762,6 +763,7 @@ async function startRecording(sink = 'workspace') {
             setChatMicState(true);
         } else {
             recordButton.classList.add('recording');
+            syncRecorderAffordances();
         }
         updateConnectionStatus('recording');
         if (replayButton) replayButton.disabled = true;
@@ -785,6 +787,7 @@ async function stopRecording() {
     // Panel-mic pulse stops now; the sink itself resets in finishRecordingSession
     // after the final transcript lands in the composer.
     if (dictationSink === 'panel') setChatMicState(false);
+    else syncRecorderAffordances();
 
     if (dc && dc.readyState === 'open') {
         // Commit any remaining audio to close out the final turn
@@ -1400,6 +1403,11 @@ function insertImageTemplate() {
 
 function clearAll() {
     stopReadAloud();
+    // A conversation about a document the user just deleted is stale, and its
+    // Undo slot would resurrect text into a deliberately emptied workspace.
+    if (chatPanelOpen()) closeChatPanel();
+    chatUndoSnapshot = null;
+    if (chatUndoBtn) chatUndoBtn.hidden = true;
     transcript.value = '';
     enhancedTranscript.value = '';
     if (editorTextarea) editorTextarea.value = '';
@@ -1430,8 +1438,17 @@ function initializeTheme() {
 // Event listeners & initialization
 // ============================================================
 
-// Record button
-recordButton.onclick = () => isRecording ? stopRecording() : startRecording();
+// Record button — owns the workspace sink only. While a panel dictation is
+// live it must not silently terminate it; the affordance sync below disables
+// it instead, and this guard covers keyboard activation.
+recordButton.onclick = () => {
+    if (isRecording) {
+        if (dictationSink === 'workspace') stopRecording();
+        else showCopyToast('Finish the spoken reply first');
+        return;
+    }
+    startRecording();
+};
 
 // Replay button (disabled in WebRTC mode)
 if (replayButton) {
@@ -1534,6 +1551,13 @@ function autosizeChatInput() {
 
 function setChatMicState(recording) {
     if (chatMic) chatMic.classList.toggle('recording', recording);
+    syncRecorderAffordances();
+}
+
+// While one mic records, the other is disabled — each owns only its own sink.
+function syncRecorderAffordances() {
+    if (chatMic) chatMic.disabled = isRecording && dictationSink !== 'panel';
+    if (recordButton) recordButton.disabled = isRecording && dictationSink === 'panel';
 }
 
 function workspaceText() {
@@ -1783,9 +1807,10 @@ if (chatUndoBtn) chatUndoBtn.onclick = undoApply;
 
 if (chatMic) chatMic.onclick = () => {
     if (isRecording) {
-        // Whatever is recording — panel or main — stop it; if it was the main
-        // recording the transcript stays in the workspace where it belongs.
-        stopRecording();
+        // Only stop a recording this mic owns; a document recording in
+        // flight is not the panel's to end.
+        if (dictationSink === 'panel') stopRecording();
+        else showCopyToast('Stop the document recording first');
         return;
     }
     startRecording('panel');
@@ -1794,7 +1819,9 @@ if (chatMic) chatMic.onclick = () => {
 if (chatInput) {
     chatInput.addEventListener('input', autosizeChatInput);
     chatInput.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
+        // isComposing: an IME candidate confirmation also fires Enter — the
+        // harnesses preserve mixed-language input, so CJK typing must work.
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
             event.preventDefault();
             sendChatMessage();
         }
@@ -1895,16 +1922,20 @@ if (editorTextarea) {
 
 // Spacebar toggle
 document.addEventListener('keydown', (event) => {
-    if (event.code === 'Space') {
-        // Suppressed while the conversation panel is open — focus moves between
-        // its buttons and space would otherwise trigger a surprise recording.
-        if (chatPanelOpen()) return;
-        const active = document.activeElement;
-        if (!active.tagName.match(/INPUT|TEXTAREA/) && !active.isContentEditable) {
-            event.preventDefault();
-            recordButton.click();
-        }
-    }
+    if (event.code !== 'Space') return;
+    // Suppressed while the conversation panel is open — focus moves between
+    // its buttons and space would otherwise trigger a surprise recording.
+    if (chatPanelOpen()) return;
+    const active = document.activeElement;
+    // Space must stay Space inside anything interactive: text fields, but also
+    // SELECT (opens the dropdown) and BUTTON (activates it) — focusing the
+    // voice picker and pressing Space used to start a recording.
+    if (active && (
+        /INPUT|TEXTAREA|SELECT|BUTTON/.test(active.tagName || '') ||
+        active.isContentEditable
+    )) return;
+    event.preventDefault();
+    recordButton.click();
 });
 
 // Theme toggle (hidden but functional)

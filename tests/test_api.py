@@ -387,3 +387,13 @@ def test_inlined_index_html_matches_public_index_html():
     inlined = re.search(r'INDEX_HTML = """(.*?)"""\n', source, re.S).group(1)
     on_disk = (repo / "public" / "index.html").read_text().rstrip("\n")
     assert inlined == on_disk, "run the sync script: INDEX_HTML has drifted from public/index.html"
+
+
+def test_chat_caps_cannot_multiply_past_the_aggregate():
+    """The per-position caps must stay within reach of the aggregate cap's
+    enforcement — if someone widens one without the other, the split-cap design
+    silently degrades back into a multiplying one."""
+    worst_case = index.CHAT_SOURCE_LIMIT + (index.CHAT_MAX_MESSAGES - 1) * index.CHAT_FOLLOWUP_LIMIT
+    # The aggregate cap must actually bind before the worst case: otherwise it
+    # is dead code and the effective limit is the multiplied one.
+    assert index.CHAT_CONTEXT_LIMIT < worst_case
