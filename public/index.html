@@ -161,6 +161,13 @@
                         </button>
                         <div class="toolbar-divider"></div>
                         <!-- AI Tools -->
+                        <button class="toolbar-btn" id="toolbarCopy" title="Copy document to clipboard">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            <span class="toolbar-label">Copy</span>
+                        </button>
                         <button class="toolbar-btn" id="toolbarReadability" title="Readability">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
@@ -193,6 +200,16 @@
                                 <rect x="6" y="6" width="12" height="12" rx="2"></rect>
                             </svg>
                             <span class="toolbar-label" id="readAloudLabel">Read aloud</span>
+                        </button>
+                        <button class="toolbar-btn" id="toolbarPauseResume" title="Pause reading" hidden>
+                            <svg class="icon-pause" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="9" y1="4" x2="9" y2="20"></line>
+                                <line x1="15" y1="4" x2="15" y2="20"></line>
+                            </svg>
+                            <svg class="icon-resume" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="6 3 20 12 6 21 6 3"></polygon>
+                            </svg>
+                            <span class="toolbar-label" id="pauseResumeLabel">Pause</span>
                         </button>
                         <select id="voiceSelect" class="toolbar-select" title="Voice (AI-generated)" aria-label="Read-aloud voice">
                             <option value="marin" selected>Marin</option>
