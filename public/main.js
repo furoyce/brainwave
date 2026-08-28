@@ -41,6 +41,8 @@ let ttsPlaying = false;
 let ttsController = null;   // AbortController for in-flight /api/speech requests
 let ttsAudio = null;        // currently playing HTMLAudioElement
 let ttsEndCurrent = null;   // resolves the promise awaiting the current clip
+let ttsPaused = false;
+let ttsResumeWaiters = [];  // resolvers parked while paused between chunks
 
 // Transcription prompt for the realtime conversation model
 const TRANSCRIPTION_PROMPT = `Role: You are a realtime speech transcription post-processor for microphone audio.
@@ -117,6 +119,9 @@ const chatTtsBadge = document.getElementById('chatTtsBadge');
 const readAloudLabel = document.getElementById('readAloudLabel');
 const voiceSelect = document.getElementById('voiceSelect');
 const ttsBadge = document.getElementById('ttsBadge');
+const toolbarCopy = document.getElementById('toolbarCopy');
+const toolbarPauseResume = document.getElementById('toolbarPauseResume');
+const pauseResumeLabel = document.getElementById('pauseResumeLabel');
 
 // --- Configuration ---
 const urlParams = new URLSearchParams(window.location.search);
@@ -1071,6 +1076,47 @@ function setReadAloudState(playing) {
     if (readAloudLabel) readAloudLabel.textContent = playing ? 'Stop' : 'Read aloud';
     // OpenAI's usage policies require disclosing that the voice is AI-generated.
     if (ttsBadge) ttsBadge.hidden = !playing;
+    // Pause only exists while something is playing; starting or stopping
+    // always lands back in the unpaused state.
+    if (!playing) setPausedState(false);
+    if (toolbarPauseResume) toolbarPauseResume.hidden = !playing;
+}
+
+function setPausedState(paused) {
+    ttsPaused = paused;
+    if (toolbarPauseResume) {
+        toolbarPauseResume.classList.toggle('paused', paused);
+        toolbarPauseResume.title = paused ? 'Resume reading' : 'Pause reading';
+    }
+    if (pauseResumeLabel) pauseResumeLabel.textContent = paused ? 'Resume' : 'Pause';
+    if (!paused) {
+        const waiters = ttsResumeWaiters.splice(0);
+        waiters.forEach((resolve) => resolve());
+    }
+}
+
+// The playback loop parks here between chunks while paused, so resuming
+// continues exactly where it left off instead of re-reading the paragraph.
+function ttsWaitWhilePaused() {
+    if (!ttsPaused) return Promise.resolve();
+    return new Promise((resolve) => ttsResumeWaiters.push(resolve));
+}
+
+function pauseReadAloud() {
+    if (!ttsPlaying || ttsPaused) return;
+    setPausedState(true);
+    if (ttsAudio) ttsAudio.pause();  // mid-clip: freezes in place, no 'ended'
+}
+
+function resumeReadAloud() {
+    if (!ttsPaused) return;
+    setPausedState(false);           // releases any parked between-chunk waiter
+    if (ttsAudio) ttsAudio.play().catch(() => {});
+}
+
+function togglePauseReadAloud() {
+    if (!ttsPlaying) return;
+    if (ttsPaused) resumeReadAloud(); else pauseReadAloud();
 }
 
 function stopReadAloud() {
@@ -1122,6 +1168,8 @@ async function startReadAloud(inputText) {
 
             const blob = await currentRequest;
             if (!ttsPlaying || signal.aborted) break;
+            await ttsWaitWhilePaused();
+            if (!ttsPlaying || signal.aborted) break;
             await playSpeechBlob(blob);
             if (!ttsPlaying || signal.aborted) break;
         }
@@ -1162,6 +1210,10 @@ function switchMode(mode) {
     // either running behind a view the user has navigated away from.
     if (mode !== 'editor' && ttsPlaying) stopReadAloud();
     if (mode !== 'editor' && chatPanelOpen()) closeChatPanel();
+
+    // The copy control moved into the workspace toolbar; the footer copy
+    // button only shows on the Transcribe tab.
+    if (copyButton) copyButton.hidden = (mode === 'editor');
 
     if (mode === 'transcribe') {
         modeTranscribe.classList.add('active');
@@ -1919,6 +1971,13 @@ if (toolbarPasteClipboard) toolbarPasteClipboard.onclick = pasteFromClipboard;
 
 // Read aloud from the editor toolbar
 if (toolbarReadAloud) toolbarReadAloud.onclick = toggleReadAloud;
+if (toolbarPauseResume) toolbarPauseResume.onclick = togglePauseReadAloud;
+
+// Toolbar copy: the workspace's copy button lives left of Readability; the
+// footer copy button serves the Transcribe tab (hidden while in Workspace).
+if (toolbarCopy) toolbarCopy.onclick = () => {
+    copyToClipboard(workspaceText(), toolbarCopy);
+};
 
 // Editor textarea -> live preview
 if (editorTextarea) {

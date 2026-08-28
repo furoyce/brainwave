@@ -302,6 +302,13 @@ body {
     white-space: nowrap;
 }
 
+/* Author display rules beat the UA's [hidden] { display: none } — restate it
+   so JS can hide toolbar and footer buttons with the hidden attribute. */
+.toolbar-btn[hidden],
+.control-btn[hidden] {
+    display: none;
+}
+
 .toolbar-btn:hover {
     background: var(--border-light);
     color: var(--text-primary);
@@ -341,6 +348,16 @@ body {
 }
 
 .toolbar-btn.active .icon-stop {
+    display: inline-block;
+}
+
+/* Pause/Resume swaps the same way. */
+.toolbar-btn .icon-resume,
+.toolbar-btn.paused .icon-pause {
+    display: none;
+}
+
+.toolbar-btn.paused .icon-resume {
     display: inline-block;
 }
 

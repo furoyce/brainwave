@@ -68,6 +68,7 @@ function build(overrides = {}) {
     'realtimeSessionUpdate', 'transcriptionSessionUpdate',
     'handleRealtimeEvent', 'resetTranscriptionSegments', 'startReadAloud',
     'stopReadAloud', 'toggleReadAloud', 'setReadAloudState',
+    'pauseReadAloud', 'resumeReadAloud', 'togglePauseReadAloud',
     'stopRecording', 'finishRecordingSession', 'waitForFinalTranscription',
     'clearTranscriptionTimers', 'initializeVoicePreference',
     'TRANSCRIPTION_QUIET_MS', 'TRANSCRIPTION_MAX_WAIT_MS',
@@ -78,7 +79,7 @@ function build(overrides = {}) {
     'switchMode'];
   const src = fs.readFileSync(require('path').join(__dirname, '..', '..', 'public', 'main.js'), 'utf8')
     + '\n;__x = {' + EXPORTS.map((n) => `${n}`).join(', ') + '};'
-    + '\n;__state = () => ({ ttsPlaying, currentSessionType, pendingStop, isRecording, dictationSink, chatMode, chatHistory: JSON.parse(JSON.stringify(chatHistory)), chatStreaming });'
+    + '\n;__state = () => ({ ttsPlaying, ttsPaused, currentSessionType, pendingStop, isRecording, dictationSink, chatMode, chatHistory: JSON.parse(JSON.stringify(chatHistory)), chatStreaming });'
     + '\n;__set = (k, v) => { if (k === "pendingStop") pendingStop = v; if (k === "currentSessionType") currentSessionType = v; if (k === "isRecording") isRecording = v; if (k === "dc") dc = v; if (k === "pc") pc = v; if (k === "startTime") startTime = v; if (k === "dictationSink") dictationSink = v; if (k === "dictationBaseline") dictationBaseline = v; };';
   vm.runInContext(src, sandbox, { filename: 'main.js' });
   return { sandbox, els, doc, x: sandbox.__x, state: sandbox.__state, set: sandbox.__set };
